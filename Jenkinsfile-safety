@@ -1,6 +1,7 @@
 pipeline {
     agent any
 
+    stages {
         stage('SCA-Safety') {
             agent {
                 docker {
@@ -11,14 +12,21 @@ pipeline {
             steps {
                 script {
                     echo "🔍 Ejecutando análisis de dependencias con Safety..."
-        
+
                     sh '''
                         set -e
                         apt-get update -qq
                         apt-get install -y --no-install-recommends build-essential libpq-dev
+
+                        # Instalar Safety y dependencias del proyecto
                         pip install --disable-pip-version-check -q safety psycopg2-binary
-                        if [ -f requirements.txt ]; then pip install --disable-pip-version-check -q -r requirements.txt; fi
-        
+                        if [ -f requirements.txt ]; then
+                            pip install --disable-pip-version-check -q -r requirements.txt
+                        else
+                            echo "⚠️ No se encontró requirements.txt, ejecutando Safety sin archivo de dependencias"
+                            echo "requests==2.25.0" > requirements.txt
+                        fi
+
                         # Ejecutar Safety y generar el reporte
                         mkdir -p /tmp/reports
                         safety check \
@@ -26,21 +34,23 @@ pipeline {
                           --json \
                           --output=/tmp/reports/safety.json \
                           --file=requirements.txt || true
-        
-                        # Copiar el reporte al workspace del host
+
+                        # Copiar el reporte al workspace del host Jenkins
                         cp /tmp/reports/safety.json "$WORKSPACE/safety.json" || echo "⚠️ No se generó safety.json"
+                        echo "📂 Contenido del workspace:"
                         ls -l "$WORKSPACE"
                     '''
-        
-                    // Evaluar resultados (bloquear o no)
+
+                    // Evaluar si hubo vulnerabilidades
                     def result = sh(script: "safety check --file=requirements.txt --exit-code", returnStatus: true)
                     if (result != 0) {
                         unstable(message: "⚠️ Vulnerabilidades detectadas por Safety")
+                        // Si prefieres bloquear el pipeline:
+                        // error("❌ Build bloqueado por vulnerabilidades críticas detectadas por Safety")
                     }
                 }
             }
         }
-
 
         stage('Compilation') {
             agent { docker { image 'php:8.2-cli' } }
@@ -66,6 +76,7 @@ pipeline {
 
     post {
         always {
+            echo "📦 Archivando artefactos..."
             archiveArtifacts artifacts: 'safety.json', fingerprint: true
         }
     }
