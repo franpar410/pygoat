@@ -1,5 +1,6 @@
 pipeline {
     agent any
+
     stages {
         stage('SCA-Safety') {
             agent {
@@ -12,19 +13,17 @@ pipeline {
                 script {
                     echo "🔍 Ejecutando análisis de dependencias con Safety..."
 
-                    // Instalamos herramientas necesarias para compilar psycopg2
+                    // Instalar dependencias necesarias (gcc y libpq-dev para psycopg2)
                     sh '''
-                        apt-get update -qq
-                        apt-get install -y --no-install-recommends gcc libpq-dev
+                        apt-get update -qq && \
+                        apt-get install -y --no-install-recommends gcc libpq-dev && \
+                        pip install --disable-pip-version-check -q safety
                     '''
 
-                    // Instalamos Safety
-                    sh 'pip install -q safety'
+                    // Instalar dependencias del proyecto si existe requirements.txt
+                    sh 'if [ -f requirements.txt ]; then pip install --disable-pip-version-check -q -r requirements.txt; fi'
 
-                    // (Opcional) Instalamos dependencias del proyecto si hay un archivo requirements.txt
-                    sh 'if [ -f requirements.txt ]; then pip install -q -r requirements.txt; fi'
-
-                    // Ejecutamos Safety y generamos el reporte en formato JSON
+                    // Ejecutar Safety y generar el reporte
                     sh '''
                         safety check \
                           --full-report \
@@ -33,12 +32,12 @@ pipeline {
                           --file=requirements.txt || true
                     '''
 
-                    // Evaluamos si hay vulnerabilidades para marcar el build como inestable o fallido
+                    // Evaluar resultados
                     def result = sh(script: "safety check --file=requirements.txt --exit-code", returnStatus: true)
                     if (result != 0) {
-                        unstable(message: "Vulnerabilidades detectadas por Safety")
-                        // Si prefieres bloquear el pipeline, usa en su lugar:
-                        // error("Build bloqueado por vulnerabilidades críticas detectadas por Safety")
+                        unstable(message: "⚠️ Vulnerabilidades detectadas por Safety")
+                        // Si prefieres bloquear el pipeline:
+                        // error("❌ Build bloqueado por vulnerabilidades críticas detectadas por Safety")
                     }
                 }
             }
