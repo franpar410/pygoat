@@ -13,22 +13,22 @@ pipeline {
                 script {
                     echo "🔍 Ejecutando análisis de dependencias con Safety..."
 
-                    // Instalar dependencias necesarias (gcc y libpq-dev para psycopg2)
+                    // Instalar dependencias necesarias (para psycopg2 y build)
                     sh '''
-                        apt-get update -qq && \
-                        apt-get install -y --no-install-recommends build-essential libpq-dev && \
-                        pip install --disable-pip-version-check -q safety
+                        apt-get update -qq
+                        apt-get install -y --no-install-recommends build-essential libpq-dev
+                        pip install --disable-pip-version-check -q safety psycopg2-binary
                     '''
 
                     // Instalar dependencias del proyecto si existe requirements.txt
                     sh 'if [ -f requirements.txt ]; then pip install --disable-pip-version-check -q -r requirements.txt; fi'
 
-                    // Ejecutar Safety y generar el reporte
+                    // Ejecutar Safety y guardar el reporte en el workspace de Jenkins
                     sh '''
                         safety check \
                           --full-report \
                           --json \
-                          --output=safety.json \
+                          --output=$WORKSPACE/safety.json \
                           --file=requirements.txt || true
                     '''
 
