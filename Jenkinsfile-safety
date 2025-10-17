@@ -1,0 +1,67 @@
+pipeline {
+    agent any
+    stages {
+        stage('SCA-Safety') {
+            agent {
+                docker {
+                    image 'python:3.11-slim'
+                    args '-u root'
+                }
+            }
+            steps {
+                script {
+                    echo "🔍 Ejecutando análisis de dependencias con Safety..."
+                    // Instalamos Safety
+                    sh 'pip install -q safety'
+
+                    // (Opcional) Instalamos dependencias del proyecto si hay un archivo requirements.txt
+                    sh 'if [ -f requirements.txt ]; then pip install -q -r requirements.txt; fi'
+
+                    // Ejecutamos Safety y generamos el reporte en formato JSON
+                    sh '''
+                        safety check \
+                          --full-report \
+                          --json \
+                          --output=safety.json \
+                          --file=requirements.txt || true
+                    '''
+
+                    // Evaluamos si hay vulnerabilidades para marcar el build como inestable o fallido
+                    def result = sh(script: "safety check --file=requirements.txt --exit-code", returnStatus: true)
+                    if (result != 0) {
+                        unstable(message: "Vulnerabilidades detectadas por Safety")
+                        // Si prefieres bloquear el pipeline, usa en su lugar:
+                        // error("Build bloqueado por vulnerabilidades críticas detectadas por Safety")
+                    }
+                }
+            }
+        }
+
+        stage('Compilation') {
+            agent { docker { image 'php:8.2-cli' } }
+            steps {
+                sh 'echo "Compilando..."'
+            }
+        }
+
+        stage('Build') {
+            agent { docker { image 'php:8.2-cli' } }
+            steps {
+                sh 'echo "docker build -t my-php-app ."'
+            }
+        }
+
+        stage('Deploy') {
+            agent { docker { image 'php:8.2-cli' } }
+            steps {
+                sh 'echo "docker run my-php-app ."'
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: 'safety.json', fingerprint: true
+        }
+    }
+}
