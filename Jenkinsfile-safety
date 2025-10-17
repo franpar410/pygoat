@@ -16,7 +16,7 @@ pipeline {
                     // Instalar dependencias necesarias (gcc y libpq-dev para psycopg2)
                     sh '''
                         apt-get update -qq && \
-                        apt-get install -y --no-install-recommends gcc libpq-dev && \
+                        apt-get install -y --no-install-recommends build-essential libpq-dev && \
                         pip install --disable-pip-version-check -q safety
                     '''
 
