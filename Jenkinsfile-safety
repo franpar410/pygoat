@@ -11,6 +11,13 @@ pipeline {
             steps {
                 script {
                     echo "🔍 Ejecutando análisis de dependencias con Safety..."
+
+                    // Instalamos herramientas necesarias para compilar psycopg2
+                    sh '''
+                        apt-get update -qq
+                        apt-get install -y --no-install-recommends gcc libpq-dev
+                    '''
+
                     // Instalamos Safety
                     sh 'pip install -q safety'
 
