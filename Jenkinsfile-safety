@@ -64,6 +64,10 @@ pipeline {
             }
         }
     }
-
+    post {
+        always {
+            archiveArtifacts artifacts: 'safety.json', fingerprint: true
+        }
+    }
 
 }
