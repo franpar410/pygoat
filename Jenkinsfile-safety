@@ -66,8 +66,8 @@ pipeline {
     }
 
     post {
-        always {
-            archiveArtifacts artifacts: 'safety.json', fingerprint: true
-        }
+        //always {
+            //archiveArtifacts artifacts: 'safety.json', fingerprint: true
+        //}
     }
 }
