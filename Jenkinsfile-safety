@@ -2,42 +2,61 @@ pipeline {
     agent any
 
     stages {
+
         stage('SCA-Safety') {
             agent {
                 docker {
                     image 'python:3.11-slim'
-                    args '-u root'
+                    args '-u root -v /var/run/docker.sock:/var/run/docker.sock -v /var/jenkins_home:/var/jenkins_home'
                 }
             }
             steps {
                 script {
                     echo "🔍 Ejecutando análisis de dependencias con Safety..."
 
-                    // Instalar dependencias necesarias (para psycopg2 y build)
+                    // Variables
+                    def reportDir = "${WORKSPACE}/reports"
+                    sh "mkdir -p ${reportDir}"
+
+                    // Instalación de dependencias del sistema
                     sh '''
                         apt-get update -qq
-                        apt-get install -y --no-install-recommends build-essential libpq-dev
-                        pip install --disable-pip-version-check -q safety psycopg2-binary
+                        apt-get install -y --no-install-recommends gcc libpq-dev
                     '''
 
-                    // Instalar dependencias del proyecto si existe requirements.txt
-                    sh 'if [ -f requirements.txt ]; then pip install --disable-pip-version-check -q -r requirements.txt; fi'
+                    // Instalación de Safety
+                    sh 'pip install --disable-pip-version-check -q safety'
 
-                    // Ejecutar Safety y guardar el reporte en el workspace de Jenkins
+                    // Instalación de dependencias del proyecto
                     sh '''
-                        safety check \
-                          --full-report \
-                          --json \
-                          --output=$WORKSPACE/safety.json \
-                          --file=requirements.txt || true
+                        if [ -f requirements.txt ]; then
+                            echo "📦 Instalando dependencias desde requirements.txt..."
+                            pip install --disable-pip-version-check -q -r requirements.txt
+                        else
+                            echo "⚠️ No se encontró requirements.txt, creando uno temporal..."
+                            echo "flask==2.0.1" > requirements.txt
+                        fi
                     '''
 
-                    // Evaluar resultados
+                    // Ejecución del análisis y generación del reporte
+                    sh """
+                        echo "🚀 Ejecutando análisis con Safety..."
+                        safety check \
+                            --full-report \
+                            --json \
+                            --output=${reportDir}/safety.json \
+                            --file=requirements.txt || true
+
+                        echo "✅ Contenido del directorio de reportes:"
+                        ls -l ${reportDir}
+                    """
+
+                    // Marcar build como inestable si hay vulnerabilidades
                     def result = sh(script: "safety check --file=requirements.txt --exit-code", returnStatus: true)
                     if (result != 0) {
                         unstable(message: "⚠️ Vulnerabilidades detectadas por Safety")
-                        // Si prefieres bloquear el pipeline:
-                        // error("❌ Build bloqueado por vulnerabilidades críticas detectadas por Safety")
+                        // Para bloquear el pipeline:
+                        // error("Build bloqueado por vulnerabilidades críticas")
                     }
                 }
             }
@@ -46,13 +65,14 @@ pipeline {
         stage('Compilation') {
             agent { docker { image 'php:8.2-cli' } }
             steps {
-                sh 'echo "Compilando..."'
+                sh 'echo "⚙️ Compilando aplicación..."'
             }
         }
 
         stage('Build') {
             agent { docker { image 'php:8.2-cli' } }
             steps {
+                sh 'echo "🏗️ Construyendo imagen Docker..."'
                 sh 'echo "docker build -t my-php-app ."'
             }
         }
@@ -60,14 +80,25 @@ pipeline {
         stage('Deploy') {
             agent { docker { image 'php:8.2-cli' } }
             steps {
-                sh 'echo "docker run my-php-app ."'
+                sh 'echo "🚀 Desplegando contenedor..."'
+                sh 'echo "docker run my-php-app"'
             }
         }
     }
+
     post {
         always {
-            archiveArtifacts artifacts: 'safety.json', fingerprint: true
+            echo "📦 Archivando artefactos..."
+            archiveArtifacts artifacts: 'reports/safety.json', fingerprint: true, allowEmptyArchive: false
+        }
+        success {
+            echo "✅ Pipeline completado correctamente."
+        }
+        unstable {
+            echo "⚠️ Pipeline marcado como inestable debido a vulnerabilidades detectadas."
+        }
+        failure {
+            echo "❌ Pipeline fallido."
         }
     }
-
 }
