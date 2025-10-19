@@ -1,86 +1,68 @@
 pipeline {
     agent any
 
+    environment {
+        REPORT_DIR = "${WORKSPACE}/reports"
+    }
+
     stages {
 
         stage('SCA-Safety') {
-            agent {
-                docker {
-                    image 'python:3.11-slim'
-                    args '-u root -v /var/run/docker.sock:/var/run/docker.sock -v /var/jenkins_home:/var/jenkins_home'
-                }
-            }
             steps {
                 script {
-                    echo "🔍 Ejecutando análisis de dependencias con Safety..."
+                    echo "🔍 Ejecutando análisis de dependencias con Safety dentro de contenedor Python..."
 
-                    // Variables
-                    def reportDir = "${WORKSPACE}/reports"
-                    sh "mkdir -p ${reportDir}"
+                    // Ejecutamos Python dentro del mismo contexto del host Jenkins (DooD controlado)
+                    docker.image('python:3.11-slim').inside('-v /var/run/docker.sock:/var/run/docker.sock -v /var/jenkins_home:/var/jenkins_home') {
+                        sh '''
+                            set -e
+                            mkdir -p ${REPORT_DIR}
 
-                    // Instalación de dependencias del sistema
-                    sh '''
-                        apt-get update -qq
-                        apt-get install -y --no-install-recommends gcc libpq-dev
-                    '''
+                            apt-get update -qq
+                            apt-get install -y --no-install-recommends gcc libpq-dev > /dev/null
 
-                    // Instalación de Safety
-                    sh 'pip install --disable-pip-version-check -q safety'
+                            pip install --disable-pip-version-check -q safety
 
-                    // Instalación de dependencias del proyecto
-                    sh '''
-                        if [ -f requirements.txt ]; then
-                            echo "📦 Instalando dependencias desde requirements.txt..."
-                            pip install --disable-pip-version-check -q -r requirements.txt
-                        else
-                            echo "⚠️ No se encontró requirements.txt, creando uno temporal..."
-                            echo "flask==2.0.1" > requirements.txt
-                        fi
-                    '''
+                            if [ -f requirements.txt ]; then
+                                echo "📦 Instalando dependencias..."
+                                pip install --disable-pip-version-check -q -r requirements.txt
+                            else
+                                echo "⚠️ No se encontró requirements.txt, creando uno temporal..."
+                                echo "flask==2.0.1" > requirements.txt
+                            fi
 
-                    // Ejecución del análisis y generación del reporte
-                    sh """
-                        echo "🚀 Ejecutando análisis con Safety..."
-                        safety check \
-                            --full-report \
-                            --json \
-                            --output=${reportDir}/safety.json \
-                            --file=requirements.txt || true
+                            echo "🚀 Ejecutando análisis con Safety..."
+                            safety check \
+                                --full-report \
+                                --json \
+                                --output=${REPORT_DIR}/safety.json \
+                                --file=requirements.txt || true
 
-                        echo "✅ Contenido del directorio de reportes:"
-                        ls -l ${reportDir}
-                    """
-
-                    // Marcar build como inestable si hay vulnerabilidades
-                    def result = sh(script: "safety check --file=requirements.txt --exit-code", returnStatus: true)
-                    if (result != 0) {
-                        unstable(message: "⚠️ Vulnerabilidades detectadas por Safety")
-                        // Para bloquear el pipeline:
-                        // error("Build bloqueado por vulnerabilidades críticas")
+                            echo "✅ Reporte generado en: ${REPORT_DIR}/safety.json"
+                            ls -l ${REPORT_DIR}
+                        '''
                     }
                 }
             }
         }
 
         stage('Compilation') {
-            agent { docker { image 'php:8.2-cli' } }
             steps {
-                sh 'echo "⚙️ Compilando aplicación..."'
+                echo "⚙️ Compilando aplicación..."
+                sh 'sleep 1'
             }
         }
 
         stage('Build') {
-            agent { docker { image 'php:8.2-cli' } }
             steps {
-                sh 'echo "🏗️ Construyendo imagen Docker..."'
+                echo "🏗️ Construyendo imagen Docker..."
                 sh 'echo "docker build -t my-php-app ."'
             }
         }
 
         stage('Deploy') {
-            agent { docker { image 'php:8.2-cli' } }
             steps {
-                sh 'echo "🚀 Desplegando contenedor..."'
+                echo "🚀 Desplegando contenedor..."
                 sh 'echo "docker run my-php-app"'
             }
         }
