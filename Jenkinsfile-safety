@@ -2,52 +2,42 @@ pipeline {
     agent any
 
     stages {
-
         stage('SCA-Safety') {
             agent {
                 docker {
                     image 'python:3.11-slim'
-                    args '-u root -v /var/run/docker.sock:/var/run/docker.sock -v /var/jenkins_home:/var/jenkins_home'
+                    args '-u root'
                 }
             }
             steps {
                 script {
                     echo "🔍 Ejecutando análisis de dependencias con Safety..."
 
+                    // Instalar dependencias necesarias (para psycopg2 y build)
                     sh '''
                         apt-get update -qq
-                        apt-get install -y --no-install-recommends gcc libpq-dev
-                        pip install --disable-pip-version-check -q safety
+                        apt-get install -y --no-install-recommends build-essential libpq-dev
+                        pip install --disable-pip-version-check -q safety psycopg2-binary
                     '''
 
-                    sh '''
-                        if [ -f requirements.txt ]; then
-                            echo "📦 Instalando dependencias desde requirements.txt..."
-                            pip install --disable-pip-version-check -q -r requirements.txt
-                        else
-                            echo "⚠️ No se encontró requirements.txt, creando uno temporal..."
-                            echo "flask==2.0.1" > requirements.txt
-                        fi
-                    '''
+                    // Instalar dependencias del proyecto si existe requirements.txt
+                    sh 'if [ -f requirements.txt ]; then pip install --disable-pip-version-check -q -r requirements.txt; fi'
 
+                    // Ejecutar Safety y guardar el reporte en el workspace de Jenkins
                     sh '''
-                        mkdir -p reports
-                        echo "🚀 Ejecutando análisis con Safety..."
                         safety check \
-                            --full-report \
-                            --json \
-                            --output=reports/safety.json \
-                            --file=requirements.txt || true
-
-                        echo "✅ Archivos generados:"
-                        ls -l reports
+                          --full-report \
+                          --json \
+                          --output=$WORKSPACE/safety.json \
+                          --file=requirements.txt || true
                     '''
 
+                    // Evaluar resultados
                     def result = sh(script: "safety check --file=requirements.txt --exit-code", returnStatus: true)
                     if (result != 0) {
                         unstable(message: "⚠️ Vulnerabilidades detectadas por Safety")
-                        // Para bloquear el pipeline:
-                        // error("Build bloqueado por vulnerabilidades críticas")
+                        // Si prefieres bloquear el pipeline:
+                        // error("❌ Build bloqueado por vulnerabilidades críticas detectadas por Safety")
                     }
                 }
             }
@@ -56,14 +46,13 @@ pipeline {
         stage('Compilation') {
             agent { docker { image 'php:8.2-cli' } }
             steps {
-                sh 'echo "⚙️ Compilando aplicación..."'
+                sh 'echo "Compilando..."'
             }
         }
 
         stage('Build') {
             agent { docker { image 'php:8.2-cli' } }
             steps {
-                sh 'echo "🏗️ Construyendo imagen Docker..."'
                 sh 'echo "docker build -t my-php-app ."'
             }
         }
@@ -71,25 +60,14 @@ pipeline {
         stage('Deploy') {
             agent { docker { image 'php:8.2-cli' } }
             steps {
-                sh 'echo "🚀 Desplegando contenedor..."'
-                sh 'echo "docker run my-php-app"'
+                sh 'echo "docker run my-php-app ."'
             }
         }
     }
 
     post {
         always {
-            echo "📦 Archivando artefactos..."
-            archiveArtifacts artifacts: 'reports/safety.json', fingerprint: true, allowEmptyArchive: true
-        }
-        success {
-            echo "✅ Pipeline completado correctamente."
-        }
-        unstable {
-            echo "⚠️ Pipeline marcado como inestable debido a vulnerabilidades detectadas."
-        }
-        failure {
-            echo "❌ Pipeline fallido."
+            archiveArtifacts artifacts: 'safety.json', fingerprint: true
         }
     }
 }
