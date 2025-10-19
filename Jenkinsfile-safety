@@ -10,38 +10,37 @@ pipeline {
         stage('SCA-Safety') {
             steps {
                 script {
-                    echo "🔍 Ejecutando análisis de dependencias con Safety dentro de contenedor Python..."
+                    echo "🔍 Ejecutando análisis de dependencias con Safety usando Docker CLI..."
 
-                    // Ejecutamos Python dentro del mismo contexto del host Jenkins (DooD controlado)
-                    docker.image('python:3.11-slim').inside('-v /var/run/docker.sock:/var/run/docker.sock -v /var/jenkins_home:/var/jenkins_home') {
-                        sh '''
-                            set -e
-                            mkdir -p ${REPORT_DIR}
+                    sh '''
+                        set -e
+                        mkdir -p ${REPORT_DIR}
 
-                            apt-get update -qq
-                            apt-get install -y --no-install-recommends gcc libpq-dev > /dev/null
+                        echo "📦 Lanzando contenedor Python para análisis..."
+                        docker run --rm \
+                            -v "$PWD":/app \
+                            -w /app \
+                            python:3.11-slim bash -c "
+                                apt-get update -qq &&
+                                apt-get install -y --no-install-recommends gcc libpq-dev > /dev/null &&
+                                pip install -q safety &&
+                                if [ -f requirements.txt ]; then
+                                    echo '📄 Instalando dependencias del proyecto...';
+                                    pip install -q -r requirements.txt;
+                                else
+                                    echo '⚠️ No se encontró requirements.txt, creando uno temporal...';
+                                    echo 'flask==2.0.1' > requirements.txt;
+                                fi &&
+                                echo '🚀 Ejecutando análisis con Safety...' &&
+                                safety check --full-report --json --output=safety.json --file=requirements.txt || true
+                            "
 
-                            pip install --disable-pip-version-check -q safety
+                        # Movemos el reporte a la carpeta persistente del workspace
+                        mv safety.json ${REPORT_DIR}/safety.json || echo "⚠️ No se generó safety.json"
+                    '''
 
-                            if [ -f requirements.txt ]; then
-                                echo "📦 Instalando dependencias..."
-                                pip install --disable-pip-version-check -q -r requirements.txt
-                            else
-                                echo "⚠️ No se encontró requirements.txt, creando uno temporal..."
-                                echo "flask==2.0.1" > requirements.txt
-                            fi
-
-                            echo "🚀 Ejecutando análisis con Safety..."
-                            safety check \
-                                --full-report \
-                                --json \
-                                --output=${REPORT_DIR}/safety.json \
-                                --file=requirements.txt || true
-
-                            echo "✅ Reporte generado en: ${REPORT_DIR}/safety.json"
-                            ls -l ${REPORT_DIR}
-                        '''
-                    }
+                    echo "✅ Reporte Safety generado en: ${REPORT_DIR}/safety.json"
+                    sh 'ls -l ${REPORT_DIR} || true'
                 }
             }
         }
@@ -77,10 +76,11 @@ pipeline {
             echo "✅ Pipeline completado correctamente."
         }
         unstable {
-            echo "⚠️ Pipeline marcado como inestable debido a vulnerabilidades detectadas."
+            echo "⚠️ Pipeline marcado como inestable por vulnerabilidades detectadas."
         }
         failure {
             echo "❌ Pipeline fallido."
         }
     }
 }
+
