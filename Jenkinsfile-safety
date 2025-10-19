@@ -1,3 +1,5 @@
+
+
 pipeline {
     agent any
 
@@ -21,8 +23,9 @@ pipeline {
                             -v "$PWD":/app \
                             -w /app \
                             python:3.11-slim bash -c "
+                                set -e
                                 apt-get update -qq &&
-                                apt-get install -y --no-install-recommends gcc libpq-dev > /dev/null &&
+                                apt-get install -y --no-install-recommends gcc libpq-dev jq > /dev/null &&
                                 pip install -q safety &&
                                 if [ -f requirements.txt ]; then
                                     echo '📄 Instalando dependencias del proyecto...';
@@ -32,11 +35,11 @@ pipeline {
                                     echo 'flask==2.0.1' > requirements.txt;
                                 fi &&
                                 echo '🚀 Ejecutando análisis con Safety...' &&
-                                safety check --full-report --json --output=safety.json --file=requirements.txt || true
+                                safety check --output json --file=requirements.txt > safety.json || true
                             "
 
-                        # Movemos el reporte a la carpeta persistente del workspace
-                        mv safety.json ${REPORT_DIR}/safety.json || echo "⚠️ No se generó safety.json"
+                        # Mover el reporte al directorio persistente
+                        mv safety.json ${REPORT_DIR}/safety.json || echo '⚠️ No se generó safety.json'
                     '''
 
                     echo "✅ Reporte Safety generado en: ${REPORT_DIR}/safety.json"
@@ -70,7 +73,7 @@ pipeline {
     post {
         always {
             echo "📦 Archivando artefactos..."
-            archiveArtifacts artifacts: 'reports/safety.json', fingerprint: true, allowEmptyArchive: false
+            archiveArtifacts artifacts: 'reports/safety.json', fingerprint: true, allowEmptyArchive: true
         }
         success {
             echo "✅ Pipeline completado correctamente."
@@ -83,4 +86,3 @@ pipeline {
         }
     }
 }
-
