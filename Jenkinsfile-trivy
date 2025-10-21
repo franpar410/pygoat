@@ -3,7 +3,7 @@ pipeline {
 
     environment {
         FAIL_ON_SEVERITY = 'HIGH'   // CRITICAL, HIGH, MEDIUM o LOW
-        AUTO_REMEDIATE   = 'false'  // true = intentar remediar vulnerabilidades
+        AUTO_REMEDIATE   = 'false'  // true = intentar remediar vulnerabilidades (no aplicable en Trivy CLI)
     }
 
     triggers {
@@ -11,12 +11,18 @@ pipeline {
     }
 
     stages {
+        /* ------------------------------ */
+        /* 🔄 Checkout del repositorio    */
+        /* ------------------------------ */
         stage('Checkout') {
             steps {
                 git branch: 'master', url: 'https://github.com/franpar410/pygoat.git'
             }
         }
 
+        /* ------------------------------ */
+        /* 🐍 Configuración de entorno Python */
+        /* ------------------------------ */
         stage('Setup Python Environment') {
             steps {
                 sh '''
@@ -29,6 +35,9 @@ pipeline {
             }
         }
 
+        /* ------------------------------ */
+        /* 🏗️ Build básico                */
+        /* ------------------------------ */
         stage('Build') {
             steps {
                 echo '🏗️  Este es un build de prueba'
@@ -37,36 +46,35 @@ pipeline {
         }
 
         /* ------------------------------ */
-        /* 🔍 Vulnerability Scan (Trivy CLI) */
+        /* 🔍 Escaneo de vulnerabilidades con Trivy */
         /* ------------------------------ */
         stage('Vulnerability Scan (Trivy)') {
-            agent {
-                docker {
-                    image 'aquasec/trivy:latest'
-                    args '-v $WORKSPACE:/workspace'
-                }
-            }
-
             steps {
                 script {
-                    echo "🚀 Ejecutando análisis de vulnerabilidades con Trivy..."
+                    echo "🚀 Ejecutando análisis de vulnerabilidades con Trivy CLI (docker run)..."
 
                     sh '''
-                        mkdir -p $WORKSPACE/reports
-                        cd /workspace
+                        mkdir -p reports
 
-                        # Escaneo del proyecto (archivos, dependencias, contenedores, etc.)
-                        # Puedes ajustar el target: . (archivos locales), requirements.txt, Dockerfile, imagen, etc.
-                        trivy fs . --security-checks vuln,config,secret \
-                                   --format json --output $WORKSPACE/reports/trivy-report.json || true
+                        echo "📦 Escaneando el proyecto con Trivy..."
+                        docker run --rm \
+                            -v $PWD:/workspace \
+                            -w /workspace \
+                            aquasec/trivy:latest fs . \
+                            --security-checks vuln,config,secret \
+                            --format json --output reports/trivy-report.json || true
 
-                        trivy fs . --security-checks vuln,config,secret \
-                                   --format sarif --output $WORKSPACE/reports/trivy-report.sarif || true
+                        docker run --rm \
+                            -v $PWD:/workspace \
+                            -w /workspace \
+                            aquasec/trivy:latest fs . \
+                            --security-checks vuln,config,secret \
+                            --format sarif --output reports/trivy-report.sarif || true
 
-                        echo "✅ Reportes generados en $WORKSPACE/reports/"
+                        echo "✅ Reportes generados en la carpeta reports/"
                     '''
 
-                    // Leer y analizar el reporte JSON
+                    // Analizar los resultados para aplicar política de bloqueo
                     def reportFile = "${env.WORKSPACE}/reports/trivy-report.json"
                     if (fileExists(reportFile)) {
                         def report = readJSON file: reportFile
@@ -78,7 +86,7 @@ pipeline {
                         if (report.Results) {
                             report.Results.each { result ->
                                 result.Vulnerabilities?.each { vuln ->
-                                    switch (vuln.Severity) {
+                                    switch (vuln.Severity?.toUpperCase()) {
                                         case 'CRITICAL': critical++; break
                                         case 'HIGH': high++; break
                                         case 'MEDIUM': medium++; break
@@ -108,45 +116,3 @@ pipeline {
 
                         if (shouldFail) {
                             error("🚨 Se encontraron vulnerabilidades de nivel ${env.FAIL_ON_SEVERITY} o superior. Bloqueando pipeline.")
-                        } else {
-                            echo "✅ No se encontraron vulnerabilidades de nivel ${env.FAIL_ON_SEVERITY} o superior."
-                        }
-                    } else {
-                        echo "⚠️ No se encontró el archivo de reporte de Trivy."
-                    }
-
-                    // Remediación automática (experimental)
-                    if (env.AUTO_REMEDIATE.toBoolean()) {
-                        echo "🛠️ Intentando aplicar remediaciones automáticas..."
-                        // Actualmente Trivy no soporta autofix completo, pero se puede integrar con dependabot u OPA
-                        echo "ℹ️ Remediación automática no implementada en Trivy CLI."
-                    } else {
-                        echo "ℹ️ Remediación automática desactivada."
-                    }
-                }
-            }
-
-            post {
-                always {
-                    echo '📄 Archivando reportes de Trivy...'
-                    archiveArtifacts artifacts: 'reports/*.json, reports/*.sarif', fingerprint: true, allowEmptyArchive: true
-                }
-            }
-        }
-
-        stage('Push to Registry (optional)') {
-            when { expression { return false } }
-            steps { sh 'echo "Pushing to Docker Registry..."' }
-        }
-
-        stage('Deploy') {
-            steps { sh 'echo "Deploying to environment..."' }
-        }
-    }
-
-    post {
-        always {
-            echo '🏁 Pipeline finalizado.'
-        }
-    }
-}
