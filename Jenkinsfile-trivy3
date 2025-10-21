@@ -1,0 +1,160 @@
+pipeline {
+    agent any
+
+    environment {
+        FAIL_ON_SEVERITY = 'HIGH'   // Política de fallo: CRITICAL, HIGH, MEDIUM, LOW
+    }
+
+    triggers {
+        githubPush()
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'master', url: 'https://github.com/franpar410/pygoat.git'
+            }
+        }
+
+        stage('Setup Python Environment') {
+            steps {
+                sh '''
+                    docker run --rm -v $PWD:/src -w /src python:3.11 bash -c "
+                        python3 -m venv venv
+                        . venv/bin/activate
+                        pip install -r requirements.txt || echo 'No requirements.txt'
+                    "
+                '''
+            }
+        }
+
+        stage('Build') {
+            steps {
+                echo '🏗️  Este es un build de prueba'
+                sh 'echo "Hola desde Jenkins!"'
+            }
+        }
+
+        /* ------------------------------ */
+        /* 🔍 Vulnerability Scan (Trivy) */
+        /* ------------------------------ */
+        stage('Vulnerability Scan (Trivy)') {
+            steps {
+                script {
+                    echo "🚀 Ejecutando análisis de vulnerabilidades con Trivy..."
+
+                    // Verificar si la imagen existe, si no, descargarla
+                    sh '''
+                        if ! docker image inspect aquasec/trivy:latest > /dev/null 2>&1; then
+                            echo "📥 Descargando imagen de Trivy..."
+                            docker pull aquasec/trivy:latest
+                        fi
+                    '''
+
+                    // Ejecutar Trivy dentro de contenedor (sin remapear el workspace)
+                    withDockerContainer(
+                        image: 'aquasec/trivy:latest',
+                        args: '--entrypoint=""'
+                    ) {
+                        sh '''
+                            echo "📦 Escaneando el código fuente con Trivy..."
+                            mkdir -p reports
+
+                            # Escaneo completo de vulnerabilidades, configuraciones y secretos
+                            trivy fs . \
+                                --security-checks vuln,config,secret \
+                                --format json \
+                                --output reports/trivy-report.json || true
+
+                            trivy fs . \
+                                --security-checks vuln,config,secret \
+                                --format sarif \
+                                --output reports/trivy-report.sarif || true
+
+                            echo "✅ Reportes generados en $(pwd)/reports"
+                            ls -l reports || true
+                        '''
+                    }
+
+                    // ✅ Validación automática
+                    def jsonReport = "${env.WORKSPACE}/reports/trivy-report.json"
+                    def sarifReport = "${env.WORKSPACE}/reports/trivy-report.sarif"
+
+                    if (!fileExists(jsonReport) || !fileExists(sarifReport)) {
+                        error("🚨 No se generaron los reportes de Trivy. Posible fallo en el análisis o en la ruta de salida.")
+                    } else {
+                        echo "✅ Reportes encontrados correctamente en ${env.WORKSPACE}/reports/"
+                    }
+
+                    // (Opcional) Evaluar severidades desde el JSON
+                    def report = readJSON file: jsonReport
+                    def critical = 0
+                    def high = 0
+                    def medium = 0
+                    def low = 0
+
+                    report.Results.each { r ->
+                        r.Vulnerabilities?.each { v ->
+                            switch (v.Severity?.toUpperCase()) {
+                                case 'CRITICAL': critical++; break
+                                case 'HIGH': high++; break
+                                case 'MEDIUM': medium++; break
+                                case 'LOW': low++; break
+                            }
+                        }
+                    }
+
+                    echo "🔎 Resultados Trivy → CRITICAL: ${critical}, HIGH: ${high}, MEDIUM: ${medium}, LOW: ${low}"
+
+                    def shouldFail = false
+                    switch (env.FAIL_ON_SEVERITY.toUpperCase()) {
+                        case 'CRITICAL':
+                            shouldFail = (critical > 0)
+                            break
+                        case 'HIGH':
+                            shouldFail = (critical > 0 || high > 0)
+                            break
+                        case 'MEDIUM':
+                            shouldFail = (critical > 0 || high > 0 || medium > 0)
+                            break
+                        case 'LOW':
+                            shouldFail = (critical > 0 || high > 0 || medium > 0 || low > 0)
+                            break
+                    }
+
+                    if (shouldFail) {
+                        error("🚨 Se encontraron vulnerabilidades de nivel ${env.FAIL_ON_SEVERITY} o superior. Bloqueando pipeline.")
+                    } else {
+                        echo "✅ No se encontraron vulnerabilidades de nivel ${env.FAIL_ON_SEVERITY} o superior."
+                    }
+                }
+            }
+
+            post {
+                always {
+                    echo '📄 Archivando reportes de Trivy...'
+                    archiveArtifacts artifacts: 'reports/*.json, reports/*.sarif', fingerprint: true, allowEmptyArchive: false
+                }
+            }
+        }
+
+        stage('Push to Registry (optional)') {
+            when { expression { return false } }
+            steps {
+                sh 'echo "Pushing to Docker Registry..."'
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                sh 'echo "Deploying to environment..."'
+            }
+        }
+    }
+
+    post {
+        always {
+            echo '🏁 Pipeline finalizado.'
+        }
+    }
+}
