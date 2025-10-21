@@ -51,28 +51,36 @@ pipeline {
         stage('Vulnerability Scan (Trivy)') {
             steps {
                 script {
-                    echo "🚀 Ejecutando análisis de vulnerabilidades con Trivy CLI (docker run)..."
+                    echo "🚀 Ejecutando análisis de vulnerabilidades con Trivy (usando withDockerContainer)..."
 
+                    // Descargar la imagen si no existe
                     sh '''
-                        mkdir -p reports
-
-                        echo "📦 Escaneando el proyecto con Trivy..."
-                        docker run --rm \
-                            -v $PWD:/workspace \
-                            -w /workspace \
-                            aquasec/trivy:latest fs . \
-                            --security-checks vuln,config,secret \
-                            --format json --output reports/trivy-report.json || true
-
-                        docker run --rm \
-                            -v $PWD:/workspace \
-                            -w /workspace \
-                            aquasec/trivy:latest fs . \
-                            --security-checks vuln,config,secret \
-                            --format sarif --output reports/trivy-report.sarif || true
-
-                        echo "✅ Reportes generados en la carpeta reports/"
+                        if ! docker image inspect aquasec/trivy:latest > /dev/null 2>&1; then
+                            echo "📥 Descargando imagen de Trivy..."
+                            docker pull aquasec/trivy:latest
+                        fi
                     '''
+
+                    // Ejecutar Trivy dentro del contenedor
+                    withDockerContainer(
+                        image: 'aquasec/trivy:latest',
+                        args: '--entrypoint="" -v $WORKSPACE:/workspace -w /workspace'
+                    ) {
+                        sh '''
+                            mkdir -p reports
+
+                            echo "📦 Escaneando el proyecto..."
+                            trivy fs . \
+                                --security-checks vuln,config,secret \
+                                --format json --output reports/trivy-report.json || true
+
+                            trivy fs . \
+                                --security-checks vuln,config,secret \
+                                --format sarif --output reports/trivy-report.sarif || true
+
+                            echo "✅ Reportes generados en la carpeta reports/"
+                        '''
+                    }
 
                     // Analizar los resultados para aplicar política de bloqueo
                     def reportFile = "${env.WORKSPACE}/reports/trivy-report.json"
@@ -116,3 +124,56 @@ pipeline {
 
                         if (shouldFail) {
                             error("🚨 Se encontraron vulnerabilidades de nivel ${env.FAIL_ON_SEVERITY} o superior. Bloqueando pipeline.")
+                        } else {
+                            echo "✅ No se encontraron vulnerabilidades de nivel ${env.FAIL_ON_SEVERITY} o superior."
+                        }
+                    } else {
+                        echo "⚠️ No se encontró el archivo de reporte de Trivy."
+                    }
+
+                    if (env.AUTO_REMEDIATE.toBoolean()) {
+                        echo "🛠️ Intentando aplicar remediaciones automáticas..."
+                        echo "ℹ️ Trivy CLI no soporta autofix, considera integrar con Dependabot o Snyk."
+                    } else {
+                        echo "ℹ️ Remediación automática desactivada."
+                    }
+                }
+            }
+
+            post {
+                always {
+                    echo '📄 Archivando reportes de Trivy...'
+                    archiveArtifacts artifacts: 'reports/*.json, reports/*.sarif', fingerprint: true, allowEmptyArchive: true
+                }
+            }
+        }
+
+        /* ------------------------------ */
+        /* 🐳 Push opcional a registry     */
+        /* ------------------------------ */
+        stage('Push to Registry (optional)') {
+            when { expression { return false } }
+            steps {
+                sh 'echo "Pushing to Docker Registry..."'
+            }
+        }
+
+        /* ------------------------------ */
+        /* 🚀 Deploy simulado              */
+        /* ------------------------------ */
+        stage('Deploy') {
+            steps {
+                sh 'echo "Deploying to environment..."'
+            }
+        }
+    }
+
+    /* ------------------------------ */
+    /* 🏁 Post pipeline                */
+    /* ------------------------------ */
+    post {
+        always {
+            echo '🏁 Pipeline finalizado.'
+        }
+    }
+}
