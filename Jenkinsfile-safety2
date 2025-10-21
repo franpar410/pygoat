@@ -1,0 +1,140 @@
+pipeline {
+    agent any
+
+    environment {
+        FAIL_ON_SEVERITY = 'HIGH'    // CRITICAL, HIGH, MEDIUM, LOW
+        SAFETY_API_KEY    = credentials('safety_api_key') // 🔐 Credencial configurada en Jenkins
+    }
+
+    triggers {
+        githubPush()
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'master', url: 'https://github.com/franpar410/pygoat.git'
+            }
+        }
+
+        stage('Setup Python Environment') {
+            steps {
+                sh '''
+                    docker run --rm -v $PWD:/src -w /src python:3.11 bash -c "
+                        python3 -m venv venv
+                        . venv/bin/activate
+                        pip install -r requirements.txt || echo 'No requirements.txt'
+                        pip install safety
+                    "
+                '''
+            }
+        }
+
+        stage('Build') {
+            steps {
+                echo '🏗️  Este es un build de prueba'
+                sh 'echo "Hola desde Jenkins!"'
+            }
+        }
+
+        /* ------------------------------ */
+        /* 🔍 Software Composition Analysis (Safety) */
+        /* ------------------------------ */
+        stage('Software Composition Analysis (Safety)') {
+            agent {
+                docker {
+                    image 'python:3.11'
+                    args '-v $WORKSPACE:/src'
+                }
+            }
+
+            steps {
+                script {
+                    sh '''
+                        echo "📦 Ejecutando análisis de dependencias con Safety..."
+
+                        cd /src
+                        mkdir -p reports
+
+                        # Instalar Safety si no está
+                        pip install safety --quiet
+
+                        # Ejecutar análisis y generar reportes
+                        if [ -f requirements.txt ]; then
+                            safety check --file=requirements.txt --json > reports/safety.json || true
+                        else
+                            echo "⚠️ No se encontró requirements.txt, se omitirá el análisis de dependencias."
+                        fi
+
+                        # Subir resultados a la interfaz web de Safety (si se configura SAFETY_API_KEY)
+                        if [ ! -z "$SAFETY_API_KEY" ]; then
+                            echo "☁️ Subiendo resultados a la interfaz web de Safety..."
+                            safety auth login --key $SAFETY_API_KEY || true
+                            safety report --file=requirements.txt --project pygoat || true
+                        else
+                            echo "ℹ️ No se configuró SAFETY_API_KEY. Solo se generará reporte local."
+                        fi
+                    '''
+
+                    // Analizar resultados y decidir si bloquear el pipeline
+                    def reportFile = "${env.WORKSPACE}/reports/safety.json"
+                    if (fileExists(reportFile)) {
+                        def report = readJSON file: reportFile
+                        def critical = 0
+                        def high = 0
+                        def medium = 0
+                        def low = 0
+
+                        // Clasificar vulnerabilidades por severidad
+                        report.issues.each { issue ->
+                            def sev = issue.severity ?: 'LOW'
+                            switch (sev.toUpperCase()) {
+                                case 'CRITICAL': critical++; break
+                                case 'HIGH': high++; break
+                                case 'MEDIUM': medium++; break
+                                case 'LOW': low++; break
+                            }
+                        }
+
+                        echo "🔎 Resultados Safety → CRITICAL: ${critical}, HIGH: ${high}, MEDIUM: ${medium}, LOW: ${low}"
+
+                        def shouldFail = false
+                        switch (env.FAIL_ON_SEVERITY.toUpperCase()) {
+                            case 'CRITICAL': shouldFail = (critical > 0); break
+                            case 'HIGH': shouldFail = (critical > 0 || high > 0); break
+                            case 'MEDIUM': shouldFail = (critical > 0 || high > 0 || medium > 0); break
+                            case 'LOW': shouldFail = (critical > 0 || high > 0 || medium > 0 || low > 0); break
+                        }
+
+                        if (shouldFail) {
+                            error("🚨 Se encontraron vulnerabilidades de nivel ${env.FAIL_ON_SEVERITY} o superior. Bloqueando pipeline.")
+                        } else {
+                            echo "✅ No se encontraron vulnerabilidades de nivel ${env.FAIL_ON_SEVERITY} o superior."
+                        }
+                    } else {
+                        echo "⚠️ No se encontró el archivo de reporte de Safety."
+                    }
+                }
+            }
+
+            post {
+                always {
+                    echo '📄 Archivando reportes de Safety...'
+                    archiveArtifacts artifacts: 'reports/*.json', fingerprint: true, allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                sh 'echo "Deploying to environment..."'
+            }
+        }
+    }
+
+    post {
+        always {
+            echo '🏁 Pipeline finalizado.'
+        }
+    }
+}
