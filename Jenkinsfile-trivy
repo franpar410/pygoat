@@ -1,0 +1,152 @@
+pipeline {
+    agent any
+
+    environment {
+        FAIL_ON_SEVERITY = 'HIGH'   // CRITICAL, HIGH, MEDIUM o LOW
+        AUTO_REMEDIATE   = 'false'  // true = intentar remediar vulnerabilidades
+    }
+
+    triggers {
+        githubPush()
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'master', url: 'https://github.com/franpar410/pygoat.git'
+            }
+        }
+
+        stage('Setup Python Environment') {
+            steps {
+                sh '''
+                    docker run --rm -v $PWD:/src -w /src python:3.11 bash -c "
+                        python3 -m venv venv
+                        . venv/bin/activate
+                        pip install -r requirements.txt || echo 'No requirements.txt'
+                    "
+                '''
+            }
+        }
+
+        stage('Build') {
+            steps {
+                echo '🏗️  Este es un build de prueba'
+                sh 'echo "Hola desde Jenkins!"'
+            }
+        }
+
+        /* ------------------------------ */
+        /* 🔍 Vulnerability Scan (Trivy CLI) */
+        /* ------------------------------ */
+        stage('Vulnerability Scan (Trivy)') {
+            agent {
+                docker {
+                    image 'aquasec/trivy:latest'
+                    args '-v $WORKSPACE:/workspace'
+                }
+            }
+
+            steps {
+                script {
+                    echo "🚀 Ejecutando análisis de vulnerabilidades con Trivy..."
+
+                    sh '''
+                        mkdir -p $WORKSPACE/reports
+                        cd /workspace
+
+                        # Escaneo del proyecto (archivos, dependencias, contenedores, etc.)
+                        # Puedes ajustar el target: . (archivos locales), requirements.txt, Dockerfile, imagen, etc.
+                        trivy fs . --security-checks vuln,config,secret \
+                                   --format json --output $WORKSPACE/reports/trivy-report.json || true
+
+                        trivy fs . --security-checks vuln,config,secret \
+                                   --format sarif --output $WORKSPACE/reports/trivy-report.sarif || true
+
+                        echo "✅ Reportes generados en $WORKSPACE/reports/"
+                    '''
+
+                    // Leer y analizar el reporte JSON
+                    def reportFile = "${env.WORKSPACE}/reports/trivy-report.json"
+                    if (fileExists(reportFile)) {
+                        def report = readJSON file: reportFile
+                        def critical = 0
+                        def high = 0
+                        def medium = 0
+                        def low = 0
+
+                        if (report.Results) {
+                            report.Results.each { result ->
+                                result.Vulnerabilities?.each { vuln ->
+                                    switch (vuln.Severity) {
+                                        case 'CRITICAL': critical++; break
+                                        case 'HIGH': high++; break
+                                        case 'MEDIUM': medium++; break
+                                        case 'LOW': low++; break
+                                    }
+                                }
+                            }
+                        }
+
+                        echo "🔎 Resultados Trivy → CRITICAL: ${critical}, HIGH: ${high}, MEDIUM: ${medium}, LOW: ${low}"
+
+                        def shouldFail = false
+                        switch (env.FAIL_ON_SEVERITY.toUpperCase()) {
+                            case 'CRITICAL':
+                                shouldFail = (critical > 0)
+                                break
+                            case 'HIGH':
+                                shouldFail = (critical > 0 || high > 0)
+                                break
+                            case 'MEDIUM':
+                                shouldFail = (critical > 0 || high > 0 || medium > 0)
+                                break
+                            case 'LOW':
+                                shouldFail = (critical > 0 || high > 0 || medium > 0 || low > 0)
+                                break
+                        }
+
+                        if (shouldFail) {
+                            error("🚨 Se encontraron vulnerabilidades de nivel ${env.FAIL_ON_SEVERITY} o superior. Bloqueando pipeline.")
+                        } else {
+                            echo "✅ No se encontraron vulnerabilidades de nivel ${env.FAIL_ON_SEVERITY} o superior."
+                        }
+                    } else {
+                        echo "⚠️ No se encontró el archivo de reporte de Trivy."
+                    }
+
+                    // Remediación automática (experimental)
+                    if (env.AUTO_REMEDIATE.toBoolean()) {
+                        echo "🛠️ Intentando aplicar remediaciones automáticas..."
+                        // Actualmente Trivy no soporta autofix completo, pero se puede integrar con dependabot u OPA
+                        echo "ℹ️ Remediación automática no implementada en Trivy CLI."
+                    } else {
+                        echo "ℹ️ Remediación automática desactivada."
+                    }
+                }
+            }
+
+            post {
+                always {
+                    echo '📄 Archivando reportes de Trivy...'
+                    archiveArtifacts artifacts: 'reports/*.json, reports/*.sarif', fingerprint: true, allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Push to Registry (optional)') {
+            when { expression { return false } }
+            steps { sh 'echo "Pushing to Docker Registry..."' }
+        }
+
+        stage('Deploy') {
+            steps { sh 'echo "Deploying to environment..."' }
+        }
+    }
+
+    post {
+        always {
+            echo '🏁 Pipeline finalizado.'
+        }
+    }
+}
