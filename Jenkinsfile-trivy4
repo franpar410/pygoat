@@ -2,11 +2,8 @@ pipeline {
     agent any
 
     environment {
-        FAIL_ON_SEVERITY = 'HIGH'   // Política de fallo: CRITICAL, HIGH, MEDIUM, LOW
-    }
-
-    triggers {
-        githubPush()
+        DOCKER_IMAGE = 'pygoat-app'
+        REPORT_DIR = 'reports'
     }
 
     stages {
@@ -18,10 +15,11 @@ pipeline {
 
         stage('Setup Python Environment') {
             steps {
+                echo "🐍 Configurando entorno Python..."
                 sh '''
-                    docker run --rm -v $PWD:/src -w /src python:3.11 bash -c "
-                        python3 -m venv venv
-                        . venv/bin/activate
+                    docker run --rm -v "$PWD":/src -w /src python:3.11 bash -c "
+                        python3 -m venv venv && \
+                        . venv/bin/activate && \
                         pip install -r requirements.txt || echo 'No requirements.txt'
                     "
                 '''
@@ -30,69 +28,60 @@ pipeline {
 
         stage('Build') {
             steps {
-                echo '🏗️  Este es un build de prueba'
-                sh 'echo "Hola desde Jenkins!"'
+                echo "🏗️  Construyendo la aplicación (simulado)..."
+                sh 'echo Hola desde Jenkins!'
             }
         }
 
-        /* ------------------------------ */
-        /* 🔍 Vulnerability Scan (Trivy) */
-        /* ------------------------------ */
         stage('Vulnerability Scan (Trivy)') {
             steps {
                 script {
                     echo "🚀 Ejecutando análisis de vulnerabilidades con Trivy..."
-        
+
                     sh '''
                         if ! docker image inspect aquasec/trivy:latest > /dev/null 2>&1; then
                             echo "📥 Descargando imagen de Trivy..."
                             docker pull aquasec/trivy:latest
                         fi
                     '''
-        
+
+                    // Ejecutar Trivy como root con una caché montada localmente
                     withDockerContainer(
                         image: 'aquasec/trivy:latest',
                         args: '--entrypoint="" -u 0 -v $PWD/.trivycache:/root/.cache'
                     ) {
                         sh '''
                             echo "📦 Escaneando el código fuente con Trivy..."
-                            mkdir -p .trivycache reports
-        
+                            mkdir -p .trivycache ${REPORT_DIR}
+
+                            # Escaneo en formato JSON
                             trivy fs . \
                                 --scanners vuln,misconfig,secret \
                                 --format json \
-                                --output reports/trivy-report.json || true
-        
+                                --output ${REPORT_DIR}/trivy-report.json || true
+
+                            # Escaneo en formato SARIF
                             trivy fs . \
                                 --scanners vuln,misconfig,secret \
                                 --format sarif \
-                                --output reports/trivy-report.sarif || true
-        
-                            echo "✅ Reportes generados en $(pwd)/reports"
-                            ls -l reports || true
+                                --output ${REPORT_DIR}/trivy-report.sarif || true
+
+                            echo "✅ Reportes generados en $(pwd)/${REPORT_DIR}"
+                            ls -l ${REPORT_DIR} || true
                         '''
                     }
-        
-                    // Validación automática
-                    def jsonReport = "${env.WORKSPACE}/reports/trivy-report.json"
-                    def sarifReport = "${env.WORKSPACE}/reports/trivy-report.sarif"
-        
+
+                    // Validación de existencia de reportes
+                    def jsonReport = "${env.WORKSPACE}/${REPORT_DIR}/trivy-report.json"
+                    def sarifReport = "${env.WORKSPACE}/${REPORT_DIR}/trivy-report.sarif"
+
                     if (!fileExists(jsonReport) || !fileExists(sarifReport)) {
                         error("🚨 No se generaron los reportes de Trivy. Posible fallo en el análisis o en la ruta de salida.")
                     }
-        
-                    echo "✅ Reportes encontrados correctamente."
-                }
-            }
-        
-            post {
-                always {
-                    echo '📄 Archivando reportes de Trivy...'
-                    archiveArtifacts artifacts: 'reports/*.json, reports/*.sarif', fingerprint: true, allowEmptyArchive: false
-                }
-            }
-        }
 
+                    echo "✅ Reportes generados correctamente."
+                }
+            }
 
             post {
                 always {
@@ -103,22 +92,27 @@ pipeline {
         }
 
         stage('Push to Registry (optional)') {
-            when { expression { return false } }
+            when {
+                expression { return false } // Desactivado por ahora
+            }
             steps {
-                sh 'echo "Pushing to Docker Registry..."'
+                echo "🚀 Pushing imagen al registry (omitido en demo)"
             }
         }
 
         stage('Deploy') {
+            when {
+                expression { return false } // Desactivado por ahora
+            }
             steps {
-                sh 'echo "Deploying to environment..."'
+                echo "🚢 Desplegando aplicación (omitido en demo)"
             }
         }
     }
 
     post {
         always {
-            echo '🏁 Pipeline finalizado.'
+            echo "🏁 Pipeline finalizado."
         }
     }
 }
