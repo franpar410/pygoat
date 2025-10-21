@@ -1,1 +1,130 @@
+pipeline {
+    agent any
 
+    environment {
+        FAIL_ON_SEVERITY = 'HIGH'   // CRITICAL, HIGH, MEDIUM o LOW
+        AUTO_REMEDIATE   = 'false'  // true = intentar remediar vulnerabilidades (no aplicable en Trivy CLI)
+    }
+
+    triggers {
+        githubPush()
+    }
+
+    stages {
+        /* ------------------------------ */
+        /* 🔄 Checkout del repositorio    */
+        /* ------------------------------ */
+        stage('Checkout') {
+            steps {
+                git branch: 'master', url: 'https://github.com/franpar410/pygoat.git'
+            }
+        }
+
+        /* ------------------------------ */
+        /* 🐍 Configuración de entorno Python */
+        /* ------------------------------ */
+        stage('Setup Python Environment') {
+            steps {
+                sh '''
+                    docker run --rm -v $PWD:/src -w /src python:3.11 bash -c "
+                        python3 -m venv venv
+                        . venv/bin/activate
+                        pip install -r requirements.txt || echo 'No requirements.txt'
+                    "
+                '''
+            }
+        }
+
+        /* ------------------------------ */
+        /* 🏗️ Build básico                */
+        /* ------------------------------ */
+        stage('Build') {
+            steps {
+                echo '🏗️  Este es un build de prueba'
+                sh 'echo "Hola desde Jenkins!"'
+            }
+        }
+
+        /* ------------------------------ */
+        /* 🔍 Escaneo de vulnerabilidades con Trivy */
+        /* ------------------------------ */
+        stage('Vulnerability Scan (Trivy)') {
+            steps {
+                script {
+                    echo "🚀 Ejecutando análisis de vulnerabilidades con Trivy (modo withDockerContainer)..."
+
+                    // Descargar la imagen de Trivy si no está presente
+                    sh '''
+                        if ! docker image inspect aquasec/trivy:latest > /dev/null 2>&1; then
+                            echo "📥 Descargando imagen de Trivy..."
+                            docker pull aquasec/trivy:latest
+                        fi
+                    '''
+
+                    // Ejecutar Trivy en el workspace de Jenkins
+                    withDockerContainer(
+                        image: 'aquasec/trivy:latest',
+                        args: '--entrypoint=""'
+                    ) {
+                        sh '''
+                            echo "📦 Escaneando el código fuente con Trivy..."
+                            mkdir -p reports
+
+                            trivy fs . \
+                                --security-checks vuln,config,secret \
+                                --format json \
+                                --output reports/trivy-report.json || true
+
+                            trivy fs . \
+                                --security-checks vuln,config,secret \
+                                --format sarif \
+                                --output reports/trivy-report.sarif || true
+
+                            echo "✅ Reportes generados en: $(pwd)/reports"
+                            ls -l reports
+                        '''
+                    }
+
+                    // Verificar si se generaron los archivos
+                    sh 'ls -l reports || echo "⚠️ No se encontraron archivos en reports/"'
+                }
+            }
+
+            post {
+                always {
+                    echo '📄 Archivando reportes de Trivy...'
+                    archiveArtifacts artifacts: 'reports/*.json, reports/*.sarif', fingerprint: true, allowEmptyArchive: true
+                }
+            }
+        }
+
+
+        /* ------------------------------ */
+        /* 🐳 Push opcional a registry     */
+        /* ------------------------------ */
+        stage('Push to Registry (optional)') {
+            when { expression { return false } }
+            steps {
+                sh 'echo "Pushing to Docker Registry..."'
+            }
+        }
+
+        /* ------------------------------ */
+        /* 🚀 Deploy simulado              */
+        /* ------------------------------ */
+        stage('Deploy') {
+            steps {
+                sh 'echo "Deploying to environment..."'
+            }
+        }
+    }
+
+    /* ------------------------------ */
+    /* 🏁 Post pipeline                */
+    /* ------------------------------ */
+    post {
+        always {
+            echo '🏁 Pipeline finalizado.'
+        }
+    }
+}
