@@ -2,6 +2,7 @@ pipeline {
     agent any
 
     environment {
+        TRUFFLE_IMAGE = 'trufflesecurity/trufflehog:latest'
         TRUFFLE_REPORT = 'trufflehog_report.json'
     }
 
@@ -38,14 +39,17 @@ pipeline {
             }
         }
 
-        stage('Scan con TruffleHog') {
+        stage('Scan con TruffleHog (Docker externo)') {
             steps {
                 sh '''
-                    # Ejecuta TruffleHog directamente dentro del contenedor Jenkins
-                    pip install --quiet trufflehog
-                    trufflehog filesystem --no-verification --json .trufflehog_test_repo > ${TRUFFLE_REPORT} || true
+                    # IMPORTANTE: Ajusta la ruta del volumen si es diferente en tu host
+                    docker run --rm \
+                      -v $(pwd):/workspace \
+                      -w /workspace \
+                      ${TRUFFLE_IMAGE} \
+                      filesystem --no-verification --json /workspace/.trufflehog_test_repo > ${TRUFFLE_REPORT} || true
                 '''
-                echo "TruffleHog ejecutado. Reporte generado en ${TRUFFLE_REPORT}"
+                echo "TruffleHog ejecutado desde contenedor Docker externo. Reporte generado en ${TRUFFLE_REPORT}"
             }
         }
 
