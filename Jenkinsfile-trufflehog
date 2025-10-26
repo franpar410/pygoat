@@ -1,0 +1,195 @@
+pipeline {
+  agent any
+
+  environment {
+    // variable que define el nombre del fichero JSON de reporte
+    TRUFFLE_REPORT = 'trufflehog_report.json'
+    // ruta de trabajo dentro del workspace
+    WORK_DIR = "${env.WORKSPACE}"
+    // imagen docker de trufflehog (ajusta si necesitas tag concreto)
+    TRUFFLE_IMAGE = 'trufflesecurity/trufflehog:latest'
+  }
+
+  options {
+    // mantener logs razonables
+    ansiColor('xterm')
+    timeout(time: 60, unit: 'MINUTES')
+  }
+
+  stages {
+    stage('Preparación - limpieza') {
+      steps {
+        echo "Workspace: ${env.WORKSPACE}"
+        sh 'rm -rf .trufflehog_test_repo || true'
+        sh 'rm -f ${TRUFFLE_REPORT} || true'
+      }
+    }
+
+    stage('Checkout (si aplica)') {
+      steps {
+        // Si quieres usar un repo real, activa este checkout.
+        // checkout scm
+        echo "Si quieres escanear un repo real, descomenta checkout scm"
+      }
+    }
+
+    stage('Crear repo de prueba con/ sin secreto (opcional)') {
+      steps {
+        script {
+          // Creamos un repo local de pruebas para asegurar que trufflehog encuentre algo
+          sh '''
+            mkdir -p .trufflehog_test_repo
+            cd .trufflehog_test_repo
+            git init
+            echo "archivo normal sin secreto" > README.md
+            git add README.md
+            git commit -m "init"
+          '''
+
+          // Si queremos forzar un hallazgo (solo si no hay resultados), insertaremos un secreto ficticio
+          // Por defecto lo dejamos comentado; se puede activar según la estrategia.
+          echo 'Repositorio de prueba creado en .trufflehog_test_repo'
+        }
+      }
+    }
+
+    stage('Insertar secreto a propósito (opcional)') {
+      steps {
+        script {
+          // Este stage inserta un secreto deliberadamente para probar TruffleHog.
+          // Puedes comentar este stage si vas a escanear un repo real que ya tiene secretos commitados.
+          sh '''
+            cd .trufflehog_test_repo
+            # Insertamos un "secreto" en un archivo y lo commiteamos
+            echo "api_key = AKIAFAKEEXAMPLE123456" > secret.txt
+            git add secret.txt
+            git commit -m "add fake secret for trufflehog test"
+            git log --oneline -n 3
+          '''
+          echo 'Secreto de prueba añadido al repo local'
+        }
+      }
+    }
+
+    stage('Scan con TruffleHog (stage propio)') {
+      steps {
+        script {
+          // Ejecutar trufflehog via docker, montando el workspace
+          // Scan a filesystem (el path .trufflehog_test_repo). Cambia a "git" o a otra ruta si hace falta.
+          sh """
+            set -o pipefail
+            docker run --rm \\
+              -v ${WORK_DIR}:/workspace \\
+              -w /workspace \\
+              ${TRUFFLE_IMAGE} \\
+              filesystem --json ./.trufflehog_test_repo > ${TRUFFLE_REPORT} || true
+          """
+          echo "TruffleHog ejecutado, output en ${TRUFFLE_REPORT}"
+        }
+      }
+    }
+
+    stage('Analizar reporte y decidir resultado') {
+      steps {
+        script {
+          // Analizamos el JSON para ver si hay hallazgos.
+          // Usamos Python por portabilidad (jq podría no existir).
+          sh '''
+            python3 - <<'PY'
+import json,sys
+f='${TRUFFLE_REPORT}'
+try:
+    with open(f,'r', encoding='utf-8') as fh:
+        data = json.load(fh)
+except Exception as e:
+    print("No se pudo leer el reporte JSON:", e)
+    # aseguramos que existe un archivo vacío válido si no hay JSON
+    print("[]")
+    sys.exit(0)
+
+# TruffleHog v3 estructura: puede devolver una lista de findings o un objeto con 'results'
+num = 0
+if isinstance(data, list):
+    num = len(data)
+elif isinstance(data, dict):
+    if 'results' in data and isinstance(data['results'], list):
+        num = len(data['results'])
+    else:
+        # buscar cualquier clave que apunte a findings
+        # fallback: contar ocurrencias de 'strings' claves
+        for k,v in data.items():
+            if isinstance(v, list):
+                num += len(v)
+print("FINDINGS_COUNT={}".format(num))
+# escribimos a un archivo que Jenkins pueda leer con readFile
+with open('trufflehog_findings_count.txt','w') as out:
+    out.write(str(num))
+PY
+          '''
+
+          // leer el numero y marcar build
+          def count = readFile('trufflehog_findings_count.txt').trim()
+          echo "Hallazgos detectados: ${count}"
+          if (count != "" && count.toInteger() > 0) {
+            // marcar como unstable (no falla la build automáticamente; es un aviso)
+            currentBuild.result = 'UNSTABLE'
+            echo "Se han detectado secretos. Build marcada como UNSTABLE."
+          } else {
+            echo "No se detectaron secretos."
+          }
+        }
+      }
+    }
+
+    stage('Archivar reporte (persistir JSON en Jenkins)') {
+      steps {
+        archiveArtifacts artifacts: "${TRUFFLE_REPORT}", fingerprint: true
+        // opcional: archivar también el conteo
+        archiveArtifacts artifacts: "trufflehog_findings_count.txt", fingerprint: true
+      }
+    }
+
+    stage('Remediación automática (opcional)') {
+      when {
+        expression {
+          // Ejecuta remediación solo si se detectaron hallazgos
+          def cnt = 0
+          if (fileExists('trufflehog_findings_count.txt')) {
+            cnt = readFile('trufflehog_findings_count.txt').trim().toInteger()
+          }
+          return cnt > 0
+        }
+      }
+      steps {
+        script {
+          echo "Iniciando remediación: neutralizar secretos en el repo local"
+          sh '''
+            cd .trufflehog_test_repo || exit 1
+            # Buscar y reemplazar la cadena conocida insertada anteriormente (solo ejemplo).
+            # En producción necesitarás una estrategia segura de rotación y notificación.
+            if grep -q "AKIAFAKEEXAMPLE123456" secret.txt; then
+              sed -i 's/AKIAFAKEEXAMPLE123456/<REDACTED>/g' secret.txt
+              git add secret.txt
+              git commit -m "remediate: redact fake secret"
+              git format-patch -1 -o ../
+            else
+              echo "No se encontró la cadena conocida a reemplazar."
+            fi
+          '''
+          // archivar patch creado
+          archiveArtifacts artifacts: ".trufflehog_test_repo/../*.patch", allowEmptyArchive: true
+          echo "Remediación realizada (si aplicable). Patch archivado."
+        }
+      }
+    }
+  } // end stages
+
+  post {
+    always {
+      echo "Fin del pipeline. Revisa los artefactos (trufflehog_report.json) en la build."
+    }
+    failure {
+      echo "Pipeline fallido."
+    }
+  }
+}
