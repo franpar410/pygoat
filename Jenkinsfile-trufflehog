@@ -10,12 +10,6 @@ pipeline {
     TRUFFLE_IMAGE = 'trufflesecurity/trufflehog:latest'
   }
 
-  options {
-    // mantener logs razonables
-    ansiColor('xterm')
-    timeout(time: 60, unit: 'MINUTES')
-  }
-
   stages {
     stage('Preparación - limpieza') {
       steps {
