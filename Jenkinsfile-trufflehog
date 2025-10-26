@@ -76,7 +76,7 @@ pipeline {
               -v ${WORK_DIR}:/workspace \\
               -w /workspace \\
               ${TRUFFLE_IMAGE} \\
-              filesystem --json ./.trufflehog_test_repo > ${TRUFFLE_REPORT} || true
+              filesystem --json /workspace/.trufflehog_test_repo > ${TRUFFLE_REPORT} || true
           """
           echo "TruffleHog ejecutado, output en ${TRUFFLE_REPORT}"
         }
