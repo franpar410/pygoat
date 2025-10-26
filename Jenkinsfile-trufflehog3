@@ -2,7 +2,6 @@ pipeline {
     agent any
 
     environment {
-        TRUFFLE_IMAGE = 'trufflesecurity/trufflehog:latest'
         TRUFFLE_REPORT = 'trufflehog_report.json'
     }
 
@@ -10,7 +9,6 @@ pipeline {
 
         stage('Preparación - limpieza') {
             steps {
-                echo "Workspace: ${WORKSPACE}"
                 sh '''
                     rm -rf .trufflehog_test_repo
                     rm -f ${TRUFFLE_REPORT}
@@ -31,7 +29,7 @@ pipeline {
                     git add README.md
                     git commit -m "init"
 
-                    # 🔥 Secreto que TruffleHog detectará
+                    # 🔥 Secreto detectable por TruffleHog
                     echo "AWS_ACCESS_KEY_ID = AKIAEXAMPLEDUMMY1234" > secret.txt
                     echo "DB_PASSWORD = SuperSecret123!" >> secret.txt
                     git add secret.txt
@@ -43,11 +41,9 @@ pipeline {
         stage('Scan con TruffleHog') {
             steps {
                 sh '''
-                    docker run --rm \
-                      -v ${WORKSPACE}:${WORKSPACE} \
-                      -w ${WORKSPACE} \
-                      ${TRUFFLE_IMAGE} \
-                      filesystem --no-verification --json ${WORKSPACE}/.trufflehog_test_repo > ${WORKSPACE}/${TRUFFLE_REPORT} || true
+                    # Ejecuta TruffleHog directamente dentro del contenedor Jenkins
+                    pip install --quiet trufflehog
+                    trufflehog filesystem --no-verification --json .trufflehog_test_repo > ${TRUFFLE_REPORT} || true
                 '''
                 echo "TruffleHog ejecutado. Reporte generado en ${TRUFFLE_REPORT}"
             }
@@ -60,7 +56,7 @@ pipeline {
                     echo "Número de hallazgos detectados: ${findings}"
 
                     if (findings.toInteger() > 0) {
-                        echo "⚠️ Se detectaron posibles secretos en el repositorio."
+                        echo "⚠️ Se detectaron posibles secretos."
                         sh "head -n 20 ${TRUFFLE_REPORT} || true"
                         currentBuild.result = 'UNSTABLE'
                     } else {
@@ -73,7 +69,6 @@ pipeline {
         stage('Archivar reporte JSON') {
             steps {
                 archiveArtifacts artifacts: "${TRUFFLE_REPORT}", onlyIfSuccessful: false
-                echo "Reporte archivado como artefacto."
             }
         }
     }
