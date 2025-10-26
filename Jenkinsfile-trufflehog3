@@ -1,0 +1,86 @@
+pipeline {
+    agent any
+
+    environment {
+        TRUFFLE_IMAGE = 'trufflesecurity/trufflehog:latest'
+        TRUFFLE_REPORT = 'trufflehog_report.json'
+    }
+
+    stages {
+
+        stage('Preparación - limpieza') {
+            steps {
+                echo "Workspace: ${WORKSPACE}"
+                sh '''
+                    rm -rf .trufflehog_test_repo
+                    rm -f ${TRUFFLE_REPORT}
+                '''
+            }
+        }
+
+        stage('Crear repo de prueba con secreto detectable') {
+            steps {
+                sh '''
+                    mkdir -p .trufflehog_test_repo
+                    cd .trufflehog_test_repo
+                    git init
+                    git config user.email "jenkins@example.com"
+                    git config user.name "Jenkins Bot"
+
+                    echo "archivo normal sin secreto" > README.md
+                    git add README.md
+                    git commit -m "init"
+
+                    # 🔥 Secreto que TruffleHog detectará
+                    echo "AWS_ACCESS_KEY_ID = AKIAEXAMPLEDUMMY1234" > secret.txt
+                    echo "DB_PASSWORD = SuperSecret123!" >> secret.txt
+                    git add secret.txt
+                    git commit -m "add detectable fake secrets"
+                '''
+            }
+        }
+
+        stage('Scan con TruffleHog') {
+            steps {
+                sh '''
+                    docker run --rm \
+                      -v ${WORKSPACE}:${WORKSPACE} \
+                      -w ${WORKSPACE} \
+                      ${TRUFFLE_IMAGE} \
+                      filesystem --no-verification --json ${WORKSPACE}/.trufflehog_test_repo > ${WORKSPACE}/${TRUFFLE_REPORT} || true
+                '''
+                echo "TruffleHog ejecutado. Reporte generado en ${TRUFFLE_REPORT}"
+            }
+        }
+
+        stage('Analizar resultados') {
+            steps {
+                script {
+                    def findings = sh(script: "grep -c 'DetectorType' ${TRUFFLE_REPORT} || true", returnStdout: true).trim()
+                    echo "Número de hallazgos detectados: ${findings}"
+
+                    if (findings.toInteger() > 0) {
+                        echo "⚠️ Se detectaron posibles secretos en el repositorio."
+                        sh "head -n 20 ${TRUFFLE_REPORT} || true"
+                        currentBuild.result = 'UNSTABLE'
+                    } else {
+                        echo "✅ No se detectaron secretos."
+                    }
+                }
+            }
+        }
+
+        stage('Archivar reporte JSON') {
+            steps {
+                archiveArtifacts artifacts: "${TRUFFLE_REPORT}", onlyIfSuccessful: false
+                echo "Reporte archivado como artefacto."
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "Fin del pipeline. Revisa el artefacto ${TRUFFLE_REPORT}."
+        }
+    }
+}
