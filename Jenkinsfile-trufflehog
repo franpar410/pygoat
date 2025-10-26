@@ -22,7 +22,7 @@ pipeline {
         stage('Checkout (si aplica)') {
             steps {
                 echo "Si quieres escanear un repo real, descomenta checkout scm"
-                checkout scm
+               // checkout scm
             }
         }
 
