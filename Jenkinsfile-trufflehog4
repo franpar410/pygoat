@@ -2,7 +2,6 @@ pipeline {
     agent any
 
     environment {
-        WORKDIR = "${env.WORKSPACE}"
         TEST_REPO = ".trufflehog_test_repo"
         REPORT = "trufflehog_report.json"
         DOCKER_IMAGE = "trufflesecurity/trufflehog:latest"
@@ -43,11 +42,13 @@ pipeline {
             steps {
                 echo "Ejecutando TruffleHog dentro de Docker..."
                 sh """
+                    mkdir -p .workspace
+                    cp -r ${TEST_REPO} .workspace/
                     docker run --rm \
-                        -v ${WORKDIR}:/workspace \
+                        -v ${env.WORKSPACE}/.workspace:/workspace \
                         -w /workspace \
                         ${DOCKER_IMAGE} \
-                        filesystem --no-verification --json /workspace/${TEST_REPO} > /workspace/${REPORT}
+                        filesystem --no-verification --json ${TEST_REPO} > ${env.WORKSPACE}/${REPORT}
                 """
                 echo "TruffleHog ejecutado. Reporte generado en ${REPORT}"
             }
