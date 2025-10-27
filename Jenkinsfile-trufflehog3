@@ -2,20 +2,19 @@ pipeline {
     agent any
 
     environment {
-        TRUFFLE_REPORT = 'trufflehog_report.json'
+        TRUFFLE_REPORT = "trufflehog_report.json"
     }
 
     stages {
         stage('Preparación - limpieza') {
             steps {
-                sh '''
-                    rm -rf .trufflehog_test_repo
-                    rm -f $TRUFFLE_REPORT
-                '''
+                echo "Limpiando workspace..."
+                sh 'rm -rf .trufflehog_test_repo'
+                sh "rm -f ${TRUFFLE_REPORT}"
             }
         }
 
-        stage('Crear repo de prueba con secreto detectable') {
+        stage('Crear repo de prueba con secretos detectables') {
             steps {
                 sh '''
                     mkdir -p .trufflehog_test_repo
@@ -23,26 +22,33 @@ pipeline {
                     git init
                     git config user.email "jenkins@example.com"
                     git config user.name "Jenkins Bot"
+
+                    # Archivo normal
                     echo "archivo normal sin secreto" > README.md
                     git add README.md
                     git commit -m "init"
-                    echo "AWS_ACCESS_KEY_ID = AKIAEXAMPLEDUMMY1234" >> secret.txt
+
+                    # Archivo con secretos detectables
+                    echo "AWS_ACCESS_KEY_ID = AKIAEXAMPLEDUMMY1234" > secret.txt
                     echo "DB_PASSWORD = SuperSecret123!" >> secret.txt
                     git add secret.txt
                     git commit -m "add detectable fake secrets"
                 '''
+                echo "Repositorio de prueba con secretos creado."
             }
         }
 
-        stage('Scan con TruffleHog') {
+        stage('Scan con TruffleHog (Docker)') {
             steps {
+                echo "Ejecutando TruffleHog dentro de Docker..."
                 sh '''
                     docker run --rm \
                         -v $(pwd):/workspace \
                         -w /workspace \
                         trufflesecurity/trufflehog:latest \
-                        filesystem --no-verification --json ./.trufflehog_test_repo > $TRUFFLE_REPORT
+                        filesystem --no-verification --json /workspace/.trufflehog_test_repo > ${TRUFFLE_REPORT}
                 '''
+                echo "TruffleHog ejecutado. Reporte generado en ${TRUFFLE_REPORT}"
             }
         }
 
@@ -50,12 +56,14 @@ pipeline {
             steps {
                 script {
                     def count = sh(
-                        script: "grep -c DetectorType $TRUFFLE_REPORT || true",
+                        script: "grep -c DetectorType ${TRUFFLE_REPORT} || true",
                         returnStdout: true
                     ).trim()
+
                     echo "Número de hallazgos detectados: ${count}"
-                    if (count.toInteger() > 0) {
-                        echo "❌ Se detectaron secretos. Revisa el reporte JSON."
+
+                    if (count != "0") {
+                        echo "⚠️ Se detectaron secretos. Revisa el reporte JSON."
                     } else {
                         echo "✅ No se detectaron secretos."
                     }
@@ -65,14 +73,14 @@ pipeline {
 
         stage('Archivar reporte JSON') {
             steps {
-                archiveArtifacts artifacts: "$TRUFFLE_REPORT", fingerprint: true
+                archiveArtifacts artifacts: "${TRUFFLE_REPORT}", fingerprint: true
             }
         }
     }
 
     post {
         always {
-            echo "Fin del pipeline. Revisa el artefacto ${TRUFFLE_REPORT}."
+            echo "Fin del pipeline. Revisa el artefacto ${TRUFFLE_REPORT} en Jenkins."
         }
     }
 }
