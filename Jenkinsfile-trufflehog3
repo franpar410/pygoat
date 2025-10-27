@@ -6,12 +6,11 @@ pipeline {
     }
 
     stages {
-
         stage('Preparación - limpieza') {
             steps {
                 sh '''
                     rm -rf .trufflehog_test_repo
-                    rm -f ${TRUFFLE_REPORT}
+                    rm -f $TRUFFLE_REPORT
                 '''
             }
         }
@@ -24,13 +23,10 @@ pipeline {
                     git init
                     git config user.email "jenkins@example.com"
                     git config user.name "Jenkins Bot"
-
                     echo "archivo normal sin secreto" > README.md
                     git add README.md
                     git commit -m "init"
-
-                    # 🔥 Secreto detectable por TruffleHog
-                    echo "AWS_ACCESS_KEY_ID = AKIAEXAMPLEDUMMY1234" > secret.txt
+                    echo "AWS_ACCESS_KEY_ID = AKIAEXAMPLEDUMMY1234" >> secret.txt
                     echo "DB_PASSWORD = SuperSecret123!" >> secret.txt
                     git add secret.txt
                     git commit -m "add detectable fake secrets"
@@ -40,25 +36,29 @@ pipeline {
 
         stage('Scan con TruffleHog') {
             steps {
+                // Usando contenedor Python temporal para ejecutar TruffleHog
                 sh '''
-                    # Ejecuta TruffleHog directamente dentro del contenedor Jenkins
-                    pip install --quiet trufflehog
-                    trufflehog filesystem --no-verification --json .trufflehog_test_repo > ${TRUFFLE_REPORT} || true
+                    docker run --rm \
+                        -v $(pwd):/workspace \
+                        -w /workspace \
+                        python:3.12-slim bash -c "
+                            pip install --quiet trufflehog &&
+                            trufflehog filesystem --no-verification --json ./.trufflehog_test_repo > $TRUFFLE_REPORT
+                        "
                 '''
-                echo "TruffleHog ejecutado. Reporte generado en ${TRUFFLE_REPORT}"
             }
         }
 
         stage('Analizar resultados') {
             steps {
                 script {
-                    def findings = sh(script: "grep -c 'DetectorType' ${TRUFFLE_REPORT} || true", returnStdout: true).trim()
-                    echo "Número de hallazgos detectados: ${findings}"
-
-                    if (findings.toInteger() > 0) {
-                        echo "⚠️ Se detectaron posibles secretos."
-                        sh "head -n 20 ${TRUFFLE_REPORT} || true"
-                        currentBuild.result = 'UNSTABLE'
+                    def count = sh(
+                        script: "grep -c DetectorType $TRUFFLE_REPORT || true",
+                        returnStdout: true
+                    ).trim()
+                    echo "Número de hallazgos detectados: ${count}"
+                    if (count.toInteger() > 0) {
+                        echo "❌ Se detectaron secretos. Revisa el reporte JSON."
                     } else {
                         echo "✅ No se detectaron secretos."
                     }
@@ -68,7 +68,7 @@ pipeline {
 
         stage('Archivar reporte JSON') {
             steps {
-                archiveArtifacts artifacts: "${TRUFFLE_REPORT}", onlyIfSuccessful: false
+                archiveArtifacts artifacts: "$TRUFFLE_REPORT", fingerprint: true
             }
         }
     }
