@@ -3,8 +3,8 @@ pipeline {
 
     environment {
         WORKDIR = "${env.WORKSPACE}"
-        TEST_REPO = "${WORKSPACE}/.trufflehog_test_repo"
-        REPORT = "${WORKSPACE}/trufflehog_report.json"
+        TEST_REPO = ".trufflehog_test_repo"
+        REPORT = "trufflehog_report.json"
         DOCKER_IMAGE = "trufflesecurity/trufflehog:latest"
     }
 
@@ -44,10 +44,10 @@ pipeline {
                 echo "Ejecutando TruffleHog dentro de Docker..."
                 sh """
                     docker run --rm \
-                        -v ${WORKSPACE}:${WORKSPACE} \
-                        -w ${WORKSPACE} \
+                        -v ${WORKDIR}:/workspace \
+                        -w /workspace \
                         ${DOCKER_IMAGE} \
-                        filesystem --no-verification --json ${TEST_REPO} > ${REPORT}
+                        filesystem --no-verification --json /workspace/${TEST_REPO} > /workspace/${REPORT}
                 """
                 echo "TruffleHog ejecutado. Reporte generado en ${REPORT}"
             }
