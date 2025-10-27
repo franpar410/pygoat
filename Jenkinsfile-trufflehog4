@@ -1,0 +1,87 @@
+pipeline {
+    agent any
+
+    environment {
+        WORKDIR = "${env.WORKSPACE}"
+        REPORT = "trufflehog_report.json"
+        TEST_REPO = "${env.WORKSPACE}/.trufflehog_test_repo"
+    }
+
+    stages {
+        stage('Preparación - limpieza') {
+            steps {
+                echo "Limpiando workspace..."
+                sh "rm -rf ${TEST_REPO}"
+                sh "rm -f ${REPORT}"
+            }
+        }
+
+        stage('Crear repo de prueba con secretos detectables') {
+            steps {
+                sh """
+                    mkdir -p ${TEST_REPO}
+                    cd ${TEST_REPO}
+                    git init
+                    git config user.email "jenkins@example.com"
+                    git config user.name "Jenkins Bot"
+
+                    echo "archivo normal sin secreto" > README.md
+                    git add README.md
+                    git commit -m "init"
+
+                    echo "AWS_ACCESS_KEY_ID = AKIAEXAMPLEDUMMY1234" > secret.txt
+                    echo "DB_PASSWORD = SuperSecret123!" >> secret.txt
+                    git add secret.txt
+                    git commit -m "add detectable fake secrets"
+                """
+                echo "Repositorio de prueba con secretos creado."
+            }
+        }
+
+        stage('Scan con TruffleHog') {
+            steps {
+                echo "Ejecutando TruffleHog directamente en Jenkins..."
+                sh """
+                    # Asegurarse que trufflehog está instalado
+                    if ! command -v trufflehog &> /dev/null; then
+                        echo "TruffleHog no está instalado. Instalando..."
+                        pip install --quiet trufflehog
+                    fi
+
+                    # Ejecutar TruffleHog
+                    trufflehog filesystem --no-verification --json ${TEST_REPO} > ${REPORT}
+                """
+                echo "TruffleHog ejecutado. Reporte generado en ${REPORT}"
+            }
+        }
+
+        stage('Analizar resultados') {
+            steps {
+                script {
+                    def count = sh(
+                        script: "grep -c DetectorType ${REPORT} || true",
+                        returnStdout: true
+                    ).trim()
+                    echo "Número de hallazgos detectados: ${count}"
+                    if (count != "0") {
+                        echo "⚠️ Se detectaron secretos. Revisa el reporte JSON."
+                    } else {
+                        echo "✅ No se detectaron secretos."
+                    }
+                }
+            }
+        }
+
+        stage('Archivar reporte JSON') {
+            steps {
+                archiveArtifacts artifacts: "${REPORT}", fingerprint: true
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "Fin del pipeline. Revisa el artefacto ${REPORT} en Jenkins."
+        }
+    }
+}
