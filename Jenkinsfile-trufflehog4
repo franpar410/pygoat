@@ -11,8 +11,7 @@ pipeline {
         stage('Preparación - limpieza') {
             steps {
                 echo "Limpiando workspace..."
-                sh "rm -rf ${TEST_REPO}"
-                sh "rm -f ${REPORT}"
+                sh "rm -rf ${TEST_REPO} ${REPORT}"
             }
         }
 
@@ -42,13 +41,11 @@ pipeline {
             steps {
                 echo "Ejecutando TruffleHog dentro de Docker..."
                 sh """
-                    mkdir -p .workspace
-                    cp -r ${TEST_REPO} .workspace/
                     docker run --rm \
-                        -v ${env.WORKSPACE}/.workspace:/workspace \
+                        -v ${env.WORKSPACE}/${TEST_REPO}:/workspace \
                         -w /workspace \
                         ${DOCKER_IMAGE} \
-                        filesystem --no-verification --json ${TEST_REPO} > ${env.WORKSPACE}/${REPORT}
+                        filesystem --no-verification --json . > ${env.WORKSPACE}/${REPORT}
                 """
                 echo "TruffleHog ejecutado. Reporte generado en ${REPORT}"
             }
