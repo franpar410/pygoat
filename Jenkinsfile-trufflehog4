@@ -3,8 +3,9 @@ pipeline {
 
     environment {
         WORKDIR = "${env.WORKSPACE}"
-        REPORT = "trufflehog_report.json"
-        TEST_REPO = "${env.WORKSPACE}/.trufflehog_test_repo"
+        TEST_REPO = "${WORKSPACE}/.trufflehog_test_repo"
+        REPORT = "${WORKSPACE}/trufflehog_report.json"
+        DOCKER_IMAGE = "trufflesecurity/trufflehog:latest"
     }
 
     stages {
@@ -38,18 +39,15 @@ pipeline {
             }
         }
 
-        stage('Scan con TruffleHog') {
+        stage('Scan con TruffleHog (Docker)') {
             steps {
-                echo "Ejecutando TruffleHog directamente en Jenkins..."
+                echo "Ejecutando TruffleHog dentro de Docker..."
                 sh """
-                    # Asegurarse que trufflehog está instalado
-                    if ! command -v trufflehog &> /dev/null; then
-                        echo "TruffleHog no está instalado. Instalando..."
-                        pip install --quiet trufflehog
-                    fi
-
-                    # Ejecutar TruffleHog
-                    trufflehog filesystem --no-verification --json ${TEST_REPO} > ${REPORT}
+                    docker run --rm \
+                        -v ${WORKSPACE}:${WORKSPACE} \
+                        -w ${WORKSPACE} \
+                        ${DOCKER_IMAGE} \
+                        filesystem --no-verification --json ${TEST_REPO} > ${REPORT}
                 """
                 echo "TruffleHog ejecutado. Reporte generado en ${REPORT}"
             }
@@ -58,10 +56,7 @@ pipeline {
         stage('Analizar resultados') {
             steps {
                 script {
-                    def count = sh(
-                        script: "grep -c DetectorType ${REPORT} || true",
-                        returnStdout: true
-                    ).trim()
+                    def count = sh(script: "grep -c DetectorType ${REPORT} || true", returnStdout: true).trim()
                     echo "Número de hallazgos detectados: ${count}"
                     if (count != "0") {
                         echo "⚠️ Se detectaron secretos. Revisa el reporte JSON."
