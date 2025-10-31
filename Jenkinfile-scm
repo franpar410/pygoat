@@ -9,7 +9,7 @@ pipeline {
         stage('Build') {
             steps {
                 sh 'ls -l'
-               // sh './build.sh'         /* Linea comentada */
+               // sh './build.sh'   ---Linea comentada
             }
         }
     }
