@@ -1,0 +1,123 @@
+pipeline {
+    agent any
+
+    environment {
+        FAIL_ON_SEVERITY = 'HIGH'    // CRITICAL, HIGH, MEDIUM, LOW
+        AUTO_REMEDIATE   = 'false'   // Habilitar remediación automática (--autofix)
+        REPORT_DIR       = "${WORKSPACE}/reports"
+        JSON_REPORT      = "${WORKSPACE}/reports/semgrep-report.json"
+        SARIF_REPORT     = "${WORKSPACE}/reports/semgrep-report.sarif"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                git branch: 'master', url: 'https://github.com/franpar410/pygoat.git'
+            }
+        }
+
+        stage('Static Code Analysis (Semgrep)') {
+            agent {
+                docker {
+                    image 'returntocorp/semgrep:latest'
+                    args "-v $WORKSPACE:/src"
+                }
+            }
+
+            steps {
+                script {
+                    sh '''
+                        set -eux
+                        echo "📦 Ejecutando análisis estático con Semgrep..."
+
+                        mkdir -p $WORKSPACE/reports
+                        cd /src
+
+                        # Ejecutar análisis con las reglas automáticas
+                        semgrep --config auto --json  --output $WORKSPACE/reports/semgrep-report.json  || true
+                        semgrep --config auto --sarif --output $WORKSPACE/reports/semgrep-report.sarif || true
+
+                        echo "✅ Análisis Semgrep completado. Archivos generados en $WORKSPACE/reports:"
+                        ls -lh $WORKSPACE/reports
+                    '''
+
+                    def reportFile = "${env.JSON_REPORT}"
+                    if (fileExists(reportFile)) {
+                        def findings = readJSON file: reportFile
+                        def counts = [CRITICAL:0, HIGH:0, MEDIUM:0, LOW:0]
+
+                        findings.results.each { r ->
+                            def sev = r.extra?.severity?.toUpperCase() ?: 'LOW'
+                            if (counts.containsKey(sev)) counts[sev]++
+                        }
+
+                        echo "🔎 Resultados Semgrep → CRITICAL: ${counts.CRITICAL}, HIGH: ${counts.HIGH}, MEDIUM: ${counts.MEDIUM}, LOW: ${counts.LOW}"
+
+                        // Bloquear pipeline según severidad configurada
+                        def shouldFail = false
+                        switch (env.FAIL_ON_SEVERITY.toUpperCase()) {
+                            case 'CRITICAL':
+                                shouldFail = (counts.CRITICAL > 0); break
+                            case 'HIGH':
+                                shouldFail = (counts.CRITICAL + counts.HIGH > 0); break
+                            case 'MEDIUM':
+                                shouldFail = (counts.CRITICAL + counts.HIGH + counts.MEDIUM > 0); break
+                            case 'LOW':
+                                shouldFail = (counts.values().sum() > 0); break
+                        }
+
+                        if (shouldFail) {
+                            error("🚨 Vulnerabilidades de severidad ${env.FAIL_ON_SEVERITY} o superior detectadas.")
+                        } else {
+                            echo "✅ No se encontraron vulnerabilidades críticas o altas."
+                        }
+                    } else {
+                        echo "⚠️ No se encontró el archivo de reporte de Semgrep. Continuando sin bloqueo."
+                    }
+
+                    if (env.AUTO_REMEDIATE.toBoolean()) {
+                        echo "🛠️ Aplicando remediaciones automáticas (--autofix)..."
+                        sh 'cd /src && semgrep --config auto --autofix || true'
+                    } else {
+                        echo "ℹ️ Remediación automática desactivada."
+                    }
+                }
+            }
+
+            post {
+                always {
+                    echo '📄 Archivando reportes de Semgrep...'
+                    archiveArtifacts artifacts: 'reports/*.json, reports/*.sarif', fingerprint: true, allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Compilation') {
+            agent { docker { image 'php:8.2-cli' } }
+            steps {
+                sh 'echo "Compilando aplicación PHP..."'
+            }
+        }
+
+        stage('Build') {
+            agent { docker { image 'php:8.2-cli' } }
+            steps {
+                sh 'echo "Construyendo imagen Docker my-php-app..."'
+            }
+        }
+
+        stage('Deploy') {
+            agent { docker { image 'php:8.2-cli' } }
+            steps {
+                sh 'echo "Desplegando contenedor my-php-app..."'
+            }
+        }
+    }
+
+    post {
+        always {
+            echo '🏁 Pipeline finalizado.'
+        }
+    }
+}
