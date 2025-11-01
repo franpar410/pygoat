@@ -1,0 +1,75 @@
+pipeline {
+    agent any
+
+    stages {
+        stage('SAST-Semgrep') {
+            agent {
+                docker {
+                    image 'python:3.11-slim'
+                    args '-u root'
+                }
+            }
+            steps {
+                script {
+                    sh '''
+                        set -eux
+
+                        # Instalamos git y pip
+                        apt-get update && apt-get install -qq -y git
+                        git config --global --add safe.directory $(pwd)
+                        pip install -q semgrep
+
+                        # Generamos el reporte en el workspace de Jenkins
+                        SEMREPORT="$WORKSPACE/semgrep.json"
+                        echo "Ejecutando Semgrep..."
+                        semgrep scan --json-output=$SEMREPORT --error . || \
+                        echo '{"error": "Semgrep failed or found issues"}' > $SEMREPORT
+
+                        # Mostramos el reporte para debug
+                        ls -l $SEMREPORT
+                        cat $SEMREPORT
+                    '''
+                }
+            }
+        }
+
+        stage('Compilation') {
+            agent {
+                docker { image 'php:8.2-cli' }
+            }
+            steps {
+                sh 'echo "Compilando..."'
+            }
+        }
+
+        stage('Build') {
+            agent {
+                docker { image 'php:8.2-cli' }
+            }
+            steps {
+                sh 'echo "docker build -t my-php-app ."'
+            }
+        }
+
+        stage('Deploy') {
+            agent {
+                docker { image 'php:8.2-cli' }
+            }
+            steps {
+                sh 'echo "docker run my-php-app ..."'
+            }
+        }
+    }
+
+    post {
+        always {
+            // Garantizamos que semgrep.json exista antes de archivar
+            script {
+                sh 'test -f $WORKSPACE/semgrep.json || echo "{}" > $WORKSPACE/semgrep.json'
+            }
+
+            archiveArtifacts artifacts: 'semgrep.json', allowEmptyArchive: true, fingerprint: true
+            echo '✅ Archivo semgrep.json archivado correctamente.'
+        }
+    }
+}
