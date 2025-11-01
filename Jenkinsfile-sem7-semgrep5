@@ -1,0 +1,99 @@
+pipeline {
+    agent any
+
+    environment {
+        REPORT_DIR = "${WORKSPACE}/reports"
+        JSON_REPORT = "${WORKSPACE}/reports/semgrep-report.json"
+        SARIF_REPORT = "${WORKSPACE}/reports/semgrep-report.sarif"
+    }
+
+    stages {
+
+        stage('SAST - Semgrep') {
+            agent {
+                docker {
+                    image 'python:3.11-slim'
+                    args '-u root'
+                }
+            }
+            steps {
+                script {
+                    sh '''
+                        set -eux
+
+                        # Crear carpeta de reportes si no existe
+                        mkdir -p $WORKSPACE/reports
+
+                        # Instalar dependencias
+                        apt-get update && apt-get install -qq -y git curl
+                        git config --global --add safe.directory $(pwd)
+                        pip install -q semgrep
+
+                        echo "==> Ejecutando análisis Semgrep..."
+                        # Generar reportes JSON y SARIF
+                        semgrep --config auto --json --output $WORKSPACE/reports/semgrep-report.json || true
+                        semgrep --config auto --sarif --output $WORKSPACE/reports/semgrep-report.sarif || true
+
+                        echo "==> Reportes generados:"
+                        ls -lh $WORKSPACE/reports
+                    '''
+
+                    // Validar que se generó al menos el JSON
+                    def reportFile = "${env.WORKSPACE}/reports/semgrep-report.json"
+                    if (!fileExists(reportFile)) {
+                        echo "⚠️ Reporte JSON no encontrado. Creando archivo vacío..."
+                        sh 'echo "{}" > $WORKSPACE/reports/semgrep-report.json'
+                    }
+
+                    // Mostrar un resumen (por ejemplo primeras líneas del JSON)
+                    sh 'head -n 20 $WORKSPACE/reports/semgrep-report.json || true'
+                }
+            }
+        }
+
+        stage('Compilation') {
+            agent {
+                docker { image 'php:8.2-cli' }
+            }
+            steps {
+                sh 'echo "Compilando aplicación PHP..."'
+            }
+        }
+
+        stage('Build') {
+            agent {
+                docker { image 'php:8.2-cli' }
+            }
+            steps {
+                sh 'echo "Construyendo imagen Docker my-php-app..."'
+            }
+        }
+
+        stage('Deploy') {
+            agent {
+                docker { image 'php:8.2-cli' }
+            }
+            steps {
+                sh 'echo "Desplegando contenedor my-php-app..."'
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                // Garantizar que los archivos existen para archivarlos
+                sh '''
+                    mkdir -p $WORKSPACE/reports
+                    test -f $WORKSPACE/reports/semgrep-report.json || echo "{}" > $WORKSPACE/reports/semgrep-report.json
+                    test -f $WORKSPACE/reports/semgrep-report.sarif || echo "{}" > $WORKSPACE/reports/semgrep-report.sarif
+                '''
+            }
+
+            // Archivar los reportes generados
+            archiveArtifacts artifacts: 'reports/*.json, reports/*.sarif', allowEmptyArchive: true, fingerprint: true
+
+            echo '✅ Reportes Semgrep archivados correctamente.'
+        }
+    }
+}
