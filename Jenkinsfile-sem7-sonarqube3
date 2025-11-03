@@ -1,0 +1,92 @@
+pipeline {
+    agent any
+
+    environment {
+        // Nombre de la herramienta SonarQube Scanner configurada en Jenkins -> Manage Jenkins -> Tools
+        SCANNER_HOME = tool 'sonarqube-scanner'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                echo '📥 Clonando el repositorio desde GitHub...'
+                git branch: 'master', url: 'https://github.com/franpar410/pygoat.git'
+            }
+        }
+
+        stage('SonarQube analysis') {
+            steps {
+                script {
+                    echo '🔍 Iniciando análisis estático con SonarQube...'
+                    withSonarQubeEnv('Sonarqube-docker') { // nombre configurado en Manage Jenkins -> Configure System
+                        sh """
+                            ${SCANNER_HOME}/bin/sonar-scanner \
+                                -Dsonar.projectKey=pygoat-analysis \
+                                -Dsonar.projectName=PyGoat \
+                                -Dsonar.sources=. \
+                                -Dsonar.language=py \
+                                -Dsonar.python.version=3.10 \
+                                -Dsonar.host.url=http://sonarqube:9000
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 3, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: false
+                }
+            }
+        }
+
+        stage('Setup Python environment') {
+            steps {
+                echo '🐍 Verificando entorno Python en el contenedor Jenkins...'
+                sh '''
+                    python3 --version
+                    pip3 --version
+                    which bandit || echo "Bandit no instalado, instalando..."
+                    pip3 install bandit --break-system-packages || true
+                '''
+            }
+        }
+
+        stage('Tests & Security Check') {
+            steps {
+                echo '🧪 Ejecutando análisis de seguridad con Bandit...'
+                sh '''
+                    bandit -r pygoat || true
+                '''
+            }
+        }
+
+        stage('Build') {
+            agent {
+                docker { image 'python:3.10' }
+            }
+            steps {
+                echo '🏗️ Construyendo aplicación...'
+                sh 'echo "docker build -t pygoat-app ."'
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                echo '🚀 Desplegando contenedor de PyGoat (simulado)...'
+                sh 'echo "docker run -d -p 8000:8000 pygoat-app"'
+            }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ Pipeline completado correctamente. Revisa los reportes en SonarQube.'
+        }
+        failure {
+            echo '❌ Pipeline falló. Revisar reporte de SonarQube en Jenkins o en http://localhost:9000'
+        }
+    }
+}
