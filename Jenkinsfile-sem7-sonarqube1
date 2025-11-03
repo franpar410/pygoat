@@ -8,17 +8,18 @@ pipeline {
         // ========================================================
         stage('SonarQube analysis') {
             steps {
-                script {
-                    def scannerHome = tool 'sonarqube-scanner' // uso de 'def' para evitar warnings
-                }
                 withSonarQubeEnv('Sonarqube-docker') { 
-                    sh """
-                        ${scannerHome}/bin/sonar-scanner \
-                        -Dsonar.projectKey=pygoat-analysis \
-                        -Dsonar.projectName=PyGoat \
-                        -Dsonar.sources=. \
-                        -Dsonar.python.version=3
-                    """
+                    script {
+                        // Definición de la herramienta dentro del script
+                        def scannerHome = tool 'sonarqube-scanner'
+                        sh """
+                            ${scannerHome}/bin/sonar-scanner \
+                            -Dsonar.projectKey=pygoat-analysis \
+                            -Dsonar.projectName=PyGoat \
+                            -Dsonar.sources=. \
+                            -Dsonar.python.version=3
+                        """
+                    }
                 }
             }
         }
@@ -28,7 +29,7 @@ pipeline {
         // ========================================================
         stage('Quality Gate') {
             steps {
-                timeout(time: 5, unit: 'MINUTES') { // aumentado timeout para seguridad
+                timeout(time: 5, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
                 }
             }
@@ -41,7 +42,7 @@ pipeline {
             agent {
                 docker {
                     image 'python:3.10'
-                    args '-u root:root' // ejecutar como root para evitar problemas de permisos
+                    args '-u root:root'
                 }
             }
             steps {
@@ -118,3 +119,4 @@ pipeline {
         }
     }
 }
+
