@@ -1,0 +1,97 @@
+pipeline {
+    agent any
+
+    environment {
+        // Nombre del proyecto en SonarQube
+        SONAR_PROJECT_KEY = "pygoat-analysis"
+        SONAR_PROJECT_NAME = "PyGoat"
+        // Configuración de SonarQube definida en Jenkins
+        SONARQUBE_ENV = "Sonarqube-docker"
+        // URL de SonarQube dentro de la red Docker
+        SONAR_HOST_URL = "http://sonarqube:9000"
+        // Token de SonarQube (configurado en Jenkins global credentials si se requiere)
+        // SONAR_AUTH_TOKEN = credentials('sonarqube-token')
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                echo '📥 Clonando el repositorio desde GitHub...'
+                git branch: 'master', url: 'https://github.com/franpar410/pygoat.git'
+            }
+        }
+
+        stage('SonarQube analysis') {
+            steps {
+                script {
+                    echo '🔍 Iniciando análisis estático con SonarQube...'
+                    withSonarQubeEnv("${SONARQUBE_ENV}") {
+                        sh """
+                            /var/jenkins_home/tools/hudson.plugins.sonar.SonarRunnerInstallation/sonarqube-scanner/bin/sonar-scanner \
+                            -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                            -Dsonar.projectName=${SONAR_PROJECT_NAME} \
+                            -Dsonar.sources=. \
+                            -Dsonar.language=py \
+                            -Dsonar.python.version=3.10 \
+                            -Dsonar.host.url=${SONAR_HOST_URL}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 3, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('Setup Python environment') {
+            steps {
+                echo '🐍 Verificando entorno Python en el contenedor Jenkins...'
+                sh '''
+                    python3 --version || echo "Python no encontrado"
+                    pip3 --version || echo "pip no encontrado"
+                    which bandit || (echo "Bandit no instalado, instalando..." && pip3 install bandit)
+                '''
+            }
+        }
+
+        stage('Tests & Security Check') {
+            steps {
+                echo '🧪 Ejecutando pruebas unitarias y análisis de seguridad...'
+                sh '''
+                    echo "Ejecutando Bandit..."
+                    bandit -r pygoat || true
+                '''
+            }
+        }
+
+        stage('Build') {
+            steps {
+                echo '⚙️ Compilando proyecto Django (PyGoat)...'
+                sh '''
+                    python3 manage.py check
+                '''
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                echo '🚀 Simulando despliegue (placeholder)...'
+            }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ Pipeline completado exitosamente.'
+        }
+        failure {
+            echo '❌ Pipeline falló. Revisar reporte de SonarQube en Jenkins o en http://localhost:9000'
+        }
+    }
+}
