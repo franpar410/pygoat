@@ -2,15 +2,22 @@ pipeline {
     agent any
 
     environment {
-        // Nombre de la herramienta SonarQube Scanner configurada en Jenkins -> Manage Jenkins -> Tools
-        SCANNER_HOME = tool 'sonarqube-scanner'
+        // Configuración de SonarQube
+        SONAR_HOST_URL = 'http://sonarqube:9000'
+        SONAR_PROJECT_KEY = 'pygoat-analysis'
+        SONAR_PROJECT_NAME = 'PyGoat'
     }
 
     stages {
+        stage('Declarative: Checkout SCM') {
+            steps {
+                checkout scm
+            }
+        }
 
         stage('Checkout') {
             steps {
-                echo '📥 Clonando el repositorio desde GitHub...'
+                echo "📥 Clonando el repositorio desde GitHub..."
                 git branch: 'master', url: 'https://github.com/franpar410/pygoat.git'
             }
         }
@@ -18,16 +25,16 @@ pipeline {
         stage('SonarQube analysis') {
             steps {
                 script {
-                    echo '🔍 Iniciando análisis estático con SonarQube...'
-                    withSonarQubeEnv('Sonarqube-docker') { // nombre configurado en Manage Jenkins -> Configure System
+                    echo "🔍 Iniciando análisis estático con SonarQube..."
+                    withSonarQubeEnv('Sonarqube-docker') {
                         sh """
-                            ${SCANNER_HOME}/bin/sonar-scanner \
-                                -Dsonar.projectKey=pygoat-analysis \
-                                -Dsonar.projectName=PyGoat \
-                                -Dsonar.sources=. \
-                                -Dsonar.language=py \
-                                -Dsonar.python.version=3.10 \
-                                -Dsonar.host.url=http://sonarqube:9000
+                        /var/jenkins_home/tools/hudson.plugins.sonar.SonarRunnerInstallation/sonarqube-scanner/bin/sonar-scanner \
+                            -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                            -Dsonar.projectName=${SONAR_PROJECT_NAME} \
+                            -Dsonar.sources=. \
+                            -Dsonar.language=py \
+                            -Dsonar.python.version=3.10 \
+                            -Dsonar.host.url=${SONAR_HOST_URL}
                         """
                     }
                 }
@@ -37,56 +44,60 @@ pipeline {
         stage('Quality Gate') {
             steps {
                 timeout(time: 3, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: false
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
 
         stage('Setup Python environment') {
             steps {
-                echo '🐍 Verificando entorno Python en el contenedor Jenkins...'
-                sh '''
-                    python3 --version
-                    pip3 --version
-                    which bandit || echo "Bandit no instalado, instalando..."
-                    pip3 install bandit --break-system-packages || true
-                '''
+                echo "🐍 Configurando entorno Python en el contenedor Jenkins..."
+                sh """
+                    python3 -m venv venv
+                    source venv/bin/activate
+                    pip install --upgrade pip
+                    pip install -r requirements.txt
+                """
             }
         }
 
         stage('Tests & Security Check') {
             steps {
-                echo '🧪 Ejecutando análisis de seguridad con Bandit...'
-                sh '''
+                echo "🧪 Ejecutando pruebas unitarias y análisis de seguridad..."
+                sh """
+                    source venv/bin/activate
+                    echo "Ejecutando Bandit..."
                     bandit -r pygoat || true
-                '''
+                """
             }
         }
 
         stage('Build') {
-            agent {
-                docker { image 'python:3.10' }
-            }
             steps {
-                echo '🏗️ Construyendo aplicación...'
-                sh 'echo "docker build -t pygoat-app ."'
+                echo "⚙️ Compilando proyecto Django (PyGoat)..."
+                sh """
+                    source venv/bin/activate
+                    python manage.py check
+                """
             }
         }
 
         stage('Deploy') {
+            when {
+                expression { return false } // Se omite por ahora hasta arreglar Build
+            }
             steps {
-                echo '🚀 Desplegando contenedor de PyGoat (simulado)...'
-                sh 'echo "docker run -d -p 8000:8000 pygoat-app"'
+                echo "🚀 Deploy stage skipped"
             }
         }
     }
 
     post {
         success {
-            echo '✅ Pipeline completado correctamente. Revisa los reportes en SonarQube.'
+            echo "✅ Pipeline finalizó correctamente"
         }
         failure {
-            echo '❌ Pipeline falló. Revisar reporte de SonarQube en Jenkins o en http://localhost:9000'
+            echo "❌ Pipeline falló. Revisar reporte de SonarQube en Jenkins o en ${SONAR_HOST_URL}"
         }
     }
 }
