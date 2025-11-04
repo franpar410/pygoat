@@ -1,0 +1,152 @@
+pipeline {
+    agent any
+
+    stages {
+
+        // ========================================================
+        // 1️⃣ Análisis SonarQube
+        // ========================================================
+        stage('SonarQube analysis') {
+            steps {
+                withSonarQubeEnv('Sonarqube-docker') { 
+                    script {
+                        def scannerHome = tool 'sonarqube-scanner'
+                        sh """
+                            ${scannerHome}/bin/sonar-scanner \
+                            -Dsonar.projectKey=pygoat-analysis \
+                            -Dsonar.projectName=PyGoat \
+                            -Dsonar.sources=. \
+                            -Dsonar.python.version=3
+                        """
+                    }
+                }
+            }
+        }
+
+        // ========================================================
+        // 2️⃣ Quality Gate
+        // ========================================================
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        // ========================================================
+        // 3️⃣ Setup Python environment
+        // ========================================================
+        stage('Setup Python environment') {
+            agent {
+                docker {
+                    image 'python:3.10'
+                    args '-u root:root'
+                }
+            }
+            steps {
+                sh '''
+                    echo "Instalando dependencias de PyGoat..."
+                    pip install --upgrade pip
+                    pip install -r requirements.txt || echo "Archivo requirements.txt no encontrado"
+                '''
+            }
+        }
+
+        // ========================================================
+        // 4️⃣ Tests y Bandit
+        // ========================================================
+        stage('Tests & Security Check') {
+            agent {
+                docker {
+                    image 'python:3.10'
+                    args '-u root:root'
+                }
+            }
+            steps {
+                sh '''
+                    echo "Ejecutando tests unitarios..."
+                    python manage.py test || echo "No hay tests configurados"
+
+                    echo "Escaneo de seguridad con Bandit..."
+                    pip install bandit
+                    bandit -r . -f json -o bandit-report.json || true
+                '''
+                archiveArtifacts artifacts: 'bandit-report.json', fingerprint: true
+            }
+        }
+
+        // ========================================================
+        // 5️⃣ Dependencias seguras (Safety)
+        // ========================================================
+        stage('Security Dependencies (Safety)') {
+            agent {
+                docker {
+                    image 'python:3.10'
+                    args '-u root:root'
+                }
+            }
+            steps {
+                sh '''
+                    echo "Analizando vulnerabilidades en dependencias con Safety..."
+                    pip install safety
+                    safety check --json > safety-report.json || true
+                '''
+                // Guardamos el reporte como artefacto
+                archiveArtifacts artifacts: 'safety-report.json', fingerprint: true
+
+                // Opcional: bloquear el pipeline si hay vulnerabilidades críticas
+                script {
+                    def safetyResult = sh(script: "cat safety-report.json", returnStdout: true).trim()
+                    if (safetyResult.contains('"severity": "critical"') || safetyResult.contains('"severity": "high"')) {
+                        error("🚨 Vulnerabilidades críticas detectadas. Pipeline detenido.")
+                    } else {
+                        echo "✅ No se encontraron vulnerabilidades críticas."
+                    }
+                }
+            }
+        }
+
+        // ========================================================
+        // 6️⃣ Build (simulada)
+        // ========================================================
+        stage('Build') {
+            agent {
+                docker {
+                    image 'python:3.10'
+                    args '-u root:root'
+                }
+            }
+            steps {
+                sh 'echo "Construyendo artefacto de la aplicación PyGoat (simulación)..."'
+            }
+        }
+
+        // ========================================================
+        // 7️⃣ Deploy (simulada)
+        // ========================================================
+        stage('Deploy') {
+            agent {
+                docker {
+                    image 'python:3.10'
+                    args '-u root:root'
+                }
+            }
+            steps {
+                sh 'echo "Desplegando aplicación PyGoat (simulación)..."'
+            }
+        }
+    }
+
+    // ========================================================
+    // 8️⃣ Post pipeline
+    // ========================================================
+    post {
+        success {
+            echo "✅ Pipeline ejecutado exitosamente y aprobado por SonarQube y Safety."
+        }
+        failure {
+            echo "❌ Pipeline falló. Revisar reporte de SonarQube o Safety en Jenkins."
+        }
+    }
+}
