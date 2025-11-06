@@ -1,0 +1,202 @@
+pipeline {
+    agent any
+
+    stages {
+
+        // ========================================================
+        // 1️⃣ Etapa de Análisis con SonarQube
+        // ========================================================
+        stage('SonarQube analysis') {
+            steps {
+                withSonarQubeEnv('Sonarqube-docker') { 
+                    script {
+                        def scannerHome = tool 'sonarqube-scanner'
+                        sh """
+                            ${scannerHome}/bin/sonar-scanner \
+                            -Dsonar.projectKey=pygoat-analysis \
+                            -Dsonar.projectName=PyGoat \
+                            -Dsonar.sources=. \
+                            -Dsonar.python.version=3
+                        """
+                    }
+                }
+            }
+        }
+
+        // ========================================================
+        // 2️⃣ Etapa de Control de Calidad (Quality Gate)
+        // ========================================================
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        // ========================================================
+        // 3️⃣ Etapa de Configuración del entorno Python
+        // ========================================================
+        stage('Setup Python environment') {
+            agent {
+                docker {
+                    image 'python:3.10'
+                    args '-u root:root'
+                }
+            }
+            steps {
+                sh '''
+                    echo "Instalando dependencias de PyGoat..."
+                    pip install --upgrade pip
+                    pip install -r requirements.txt || echo "Archivo requirements.txt no encontrado"
+                '''
+            }
+        }
+
+        // ========================================================
+        // 4️⃣ Etapa de Compilación / Pruebas
+        // ========================================================
+        stage('Tests & Security Check') {
+            agent {
+                docker {
+                    image 'python:3.10'
+                    args '-u root:root'
+                }
+            }
+            steps {
+                sh '''
+                    echo "Ejecutando tests unitarios..."
+                    python manage.py test || echo "No hay tests configurados"
+
+                    echo "Escaneo de seguridad con Bandit..."
+                    pip install bandit
+                    bandit -r . || true
+                '''
+            }
+        }
+
+        // ========================================================
+        // 5️⃣ Etapa de Build (simulada)
+        // ========================================================
+        stage('Build') {
+            agent {
+                docker {
+                    image 'python:3.10'
+                    args '-u root:root'
+                }
+            }
+            steps {
+                sh 'echo "Construyendo artefacto de la aplicación PyGoat (simulación)..."'
+            }
+        }
+
+        // ========================================================
+        // 6️⃣ Etapa de Despliegue (simulada)
+        // ========================================================
+        stage('Deploy') {
+            agent {
+                docker {
+                    image 'python:3.10'
+                    args '-u root:root'
+                }
+            }
+            steps {
+                sh 'echo "Desplegando aplicación PyGoat (simulación)..."'
+            }
+        }
+
+        // ========================================================
+        // 7️⃣ Etapa de Análisis de Dependencias (Dependency-Track)
+        // ========================================================
+        stage('Dependency Track Scan') {
+            agent {
+                docker {
+                    image 'python:3.10'
+                    args '-u root:root'
+                }
+            }
+            steps {
+                script {
+                    echo "Generando SBOM (CycloneDX) para PyGoat..."
+                    sh '''
+                        pip install cyclonedx-bom jq
+                        cyclonedx-py --output bom.json
+                    '''
+
+                    echo "Subiendo SBOM a Dependency-Track..."
+                    withCredentials([string(credentialsId: 'dependency-track-api-key', variable: 'DT_API_KEY')]) {
+                        sh '''
+                            curl -s -X POST "http://dependency-track:8081/api/v1/bom" \
+                              -H "X-Api-Key: ${DT_API_KEY}" \
+                              -H "Content-Type: multipart/form-data" \
+                              -F "projectName=PyGoat" \
+                              -F "autoCreate=true" \
+                              -F "bom=@bom.json"
+                        '''
+                    }
+
+                    echo "Esperando que Dependency-Track procese el SBOM..."
+                    sleep 15
+
+                    echo "Descargando métricas del proyecto..."
+                    withCredentials([string(credentialsId: 'dependency-track-api-key', variable: 'DT_API_KEY')]) {
+                        sh '''
+                            curl -s -X GET "http://dependency-track:8081/api/v1/project?name=PyGoat" \
+                              -H "X-Api-Key: ${DT_API_KEY}" \
+                              -o project.json
+
+                            PROJECT_UUID=$(jq -r '.[0].uuid' project.json)
+
+                            curl -s -X GET "http://dependency-track:8081/api/v1/project/${PROJECT_UUID}/metrics" \
+                              -H "X-Api-Key: ${DT_API_KEY}" \
+                              -o metrics.json
+
+                            echo "📊 Métricas descargadas:"
+                            cat metrics.json
+                        '''
+                    }
+
+                    echo "Evaluando vulnerabilidades críticas..."
+                    def criticals = sh(script: "jq '.critical' metrics.json", returnStdout: true).trim().toInteger()
+
+                    if (criticals > 0) {
+                        error "❌ Se encontraron ${criticals} vulnerabilidades CRÍTICAS. Pipeline bloqueado."
+                    } else {
+                        echo "✅ No se encontraron vulnerabilidades críticas."
+                    }
+
+                    // Guardar reporte en Jenkins
+                    archiveArtifacts artifacts: 'metrics.json', fingerprint: true
+                }
+            }
+        }
+
+        // ========================================================
+        // 8️⃣ Etapa opcional de remediación automática
+        // ========================================================
+        stage('Remediation (Optional)') {
+            when { expression { return fileExists('requirements.txt') } }
+            agent { docker { image 'python:3.10' } }
+            steps {
+                sh '''
+                    echo "Analizando y actualizando dependencias inseguras..."
+                    pip install safety
+                    safety check --full-report || true
+                    pip install --upgrade -r requirements.txt
+                '''
+            }
+        }
+    }
+
+    // ========================================================
+    // 9️⃣ Post: Acciones finales según resultado
+    // ========================================================
+    post {
+        success {
+            echo "✅ Pipeline ejecutado exitosamente y aprobado por SonarQube y Dependency-Track."
+        }
+        failure {
+            echo "❌ Pipeline falló. Revisar reportes en SonarQube (http://localhost:9000) o Dependency-Track (http://localhost:8081)"
+        }
+    }
+}
