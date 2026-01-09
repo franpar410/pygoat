@@ -1,0 +1,66 @@
+node {
+    def appName = "pygoat"
+    def bomFile = "bom.xml"
+
+    stage('Checkout SCM') {
+        checkout scm
+    }
+
+    stage('SAST - Bandit') {
+        echo "Running Bandit SAST analysis"
+
+        sh """
+        docker run --rm \
+          -v "\$(pwd)":/src \
+          pyupio/bandit \
+          bandit -r /src -f json -o /src/bandit-report.json || true
+        """
+    }
+
+    stage('Secrets Scan - Gitleaks') {
+        echo "Running Gitleaks secret scan"
+
+        sh """
+        docker run --rm \
+          -v "\$(pwd)":/repo \
+          zricethezav/gitleaks:latest \
+          detect --source=/repo --report-format json --report-path /repo/gitleaks-report.json || true
+        """
+    }
+
+    stage('SCA - Dependency-Track') {
+        echo "Generating SBOM and sending to Dependency-Track"
+
+        withCredentials([
+            string(credentialsId: 'dependency-track-api-key', variable: 'DT_API_KEY'),
+            string(credentialsId: 'dependency-track-url', variable: 'DT_URL')
+        ]) {
+
+            sh """
+            # Generate SBOM with CycloneDX
+            docker run --rm \
+              -v "\$(pwd)":/app \
+              cyclonedx/cyclonedx-python \
+              /app -o /app/${bomFile}
+
+            # Upload BOM to Dependency-Track
+            curl -X POST "\${DT_URL}/api/v1/bom" \
+              -H "X-Api-Key: \${DT_API_KEY}" \
+              -H "Content-Type: multipart/form-data" \
+              -F "autoCreate=true" \
+              -F "projectName=${appName}" \
+              -F "projectVersion=1.0" \
+              -F "bom=@${bomFile}"
+            """
+        }
+    }
+
+    stage('Results Summary') {
+        echo """
+        Analysis completed:
+        - Bandit report: bandit-report.json
+        - Gitleaks report: gitleaks-report.json
+        - Dependency-Track: SBOM uploaded
+        """
+    }
+}
