@@ -37,7 +37,7 @@ node {
         ]) {
 
 
-            sh """
+        sh """
             # Generate SBOM with CycloneDX
             docker run --rm \
                -u $(id -u):$(id -g) \
