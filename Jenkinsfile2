@@ -1,22 +1,22 @@
 node {
 
-    /* =========================
-       Variables globales
-       ========================= */
+    /* =========================================================
+       Variables globales (Groovy)
+       ========================================================= */
     def appName    = "pygoat"
     def appVersion = "1.0"
     def bomFile    = "bom.xml"
 
-    /* =========================
+    /* =========================================================
        Checkout
-       ========================= */
+       ========================================================= */
     stage('Checkout SCM') {
         checkout scm
     }
 
-    /* =========================
+    /* =========================================================
        SAST - Bandit
-       ========================= */
+       ========================================================= */
     stage('SAST - Bandit') {
         echo "Running Bandit SAST analysis"
 
@@ -29,9 +29,9 @@ node {
         '''
     }
 
-    /* =========================
+    /* =========================================================
        Secrets Scan - Gitleaks
-       ========================= */
+       ========================================================= */
     stage('Secrets Scan - Gitleaks') {
         echo "Running Gitleaks secret scan"
 
@@ -40,15 +40,16 @@ node {
           -u $(id -u):$(id -g) \
           -v "$(pwd)":/repo \
           zricethezav/gitleaks:latest \
-          detect --source=/repo \
-                 --report-format json \
-                 --report-path /repo/gitleaks-report.json || true
+          detect \
+          --source=/repo \
+          --report-format json \
+          --report-path /repo/gitleaks-report.json || true
         '''
     }
 
-    /* =========================
+    /* =========================================================
        SCA - Dependency-Track
-       ========================= */
+       ========================================================= */
     stage('SCA - Dependency-Track') {
         echo "Generating SBOM and sending to Dependency-Track"
 
@@ -57,44 +58,51 @@ node {
             string(credentialsId: 'dependency-track-url',     variable: 'DT_URL')
         ]) {
 
-            sh '''
-            set -e
+            withEnv([
+                "APP_NAME=${appName}",
+                "APP_VERSION=${appVersion}",
+                "BOM_FILE=${bomFile}"
+            ]) {
 
-            echo "🔹 Generating SBOM with CycloneDX..."
+                sh '''
+                set -e
 
-            docker run --rm \
-              -u $(id -u):$(id -g) \
-              -v "$(pwd)":/app \
-              cyclonedx/cyclonedx-python \
-              requirements \
-              /app/requirements.txt \
-              -o /app/bom.xml
+                echo "🔹 Generating SBOM with CycloneDX..."
 
-            echo "🔹 Uploading SBOM to Dependency-Track..."
+                docker run --rm \
+                  -u $(id -u):$(id -g) \
+                  -v "$(pwd)":/app \
+                  cyclonedx/cyclonedx-python \
+                  requirements \
+                  /app/requirements.txt \
+                  -o /app/${BOM_FILE}
 
-            curl -s -X POST "${DT_URL}/api/v1/bom" \
-              -H "X-Api-Key: ${DT_API_KEY}" \
-              -H "Content-Type: multipart/form-data" \
-              -F "autoCreate=true" \
-              -F "projectName=${appName}" \
-              -F "projectVersion=${appVersion}" \
-              -F "bom=@${bomFile}"
-            '''
+                echo "🔹 Uploading SBOM to Dependency-Track..."
+
+                curl -f -X POST "${DT_URL}/api/v1/bom" \
+                  -H "X-Api-Key: ${DT_API_KEY}" \
+                  -H "Content-Type: multipart/form-data" \
+                  -F "autoCreate=true" \
+                  -F "projectName=${APP_NAME}" \
+                  -F "projectVersion=${APP_VERSION}" \
+                  -F "bom=@${BOM_FILE}"
+                '''
+            }
         }
     }
 
-    /* =========================
-       Summary
-       ========================= */
+    /* =========================================================
+       Results Summary
+       ========================================================= */
     stage('Results Summary') {
         echo """
         ✅ Analysis completed successfully
 
-        Reports generated:
-        - Bandit:        bandit-report.json
-        - Gitleaks:      gitleaks-report.json
-        - SBOM:          bom.xml
-        - Dependency-Track: SBOM uploaded
+        Artifacts generated:
+        - Bandit report:    bandit-report.json
+        - Gitleaks report:  gitleaks-report.json
+        - SBOM:             bom.xml
+        - Dependency-Track: BOM uploaded correctly
         """
     }
 }
