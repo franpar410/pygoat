@@ -39,11 +39,12 @@ node {
             sh """
             # Generate SBOM with CycloneDX
             docker run --rm \
-              -v $WORKSPACE:/app \
-               cyclonedx/cyclonedx-python \
-               requirements \
-               -r /app/requirements.txt \
-               -o /app/bom.xml
+                -u $(id -u):$(id -g) \
+                -v "$(pwd)":/app \
+                cyclonedx/cyclonedx-python \
+                requirements \
+                /app/requirements.txt \
+                -o /app/bom.xml
 
             # Upload BOM to Dependency-Track
             curl -X POST "\${DT_URL}/api/v1/bom" \
