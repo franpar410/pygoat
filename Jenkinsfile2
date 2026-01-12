@@ -36,16 +36,12 @@ node {
             string(credentialsId: 'dependency-track-url', variable: 'DT_URL')
         ]) {
 
-
             sh """
             # Generate SBOM with CycloneDX
             docker run --rm \
-              -u $(id -u):$(id -g) \
-              -v "$(pwd)":/app \
+              -v "\$(pwd)":/app \
               cyclonedx/cyclonedx-python \
-              requirements \
-              /app/requirements.txt \
-              -o /app/bom.xml
+              /app -o /app/${bomFile}
 
 
             # Upload BOM to Dependency-Track
