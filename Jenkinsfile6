@@ -21,11 +21,15 @@ node {
             sh '''
             docker run --rm \
               -v "$PWD":/src \
-              pycqa/bandit:latest \
-              bandit -r /src \
-                     -f json \
-                     -o /src/bandit-report.json \
-                     --exit-zero
+              -w /src \
+              python:3.11-slim \
+              sh -c "
+                pip install --no-cache-dir bandit && \
+                bandit -r . \
+                       -f json \
+                       -o bandit-report.json \
+                       --exit-zero
+              "
             '''
         }
 
