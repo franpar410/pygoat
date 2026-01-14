@@ -1,0 +1,106 @@
+node {
+
+    /* =========================================================
+       Variables globales
+       ========================================================= */
+    def APP_NAME    = "pygoat"
+    def APP_VERSION = "1.0"
+    def BOM_FILE    = "bom.xml"
+
+    /* =========================================================
+       Checkout
+       ========================================================= */
+    stage('Checkout SCM') {
+        checkout scm
+    }
+
+    /* =========================================================
+       SAST - Bandit
+       ========================================================= */
+    stage('SAST - Bandit') {
+        echo "🔍 Running SAST analysis with Bandit"
+
+        sh '''
+        docker run --rm \
+          -u $(id -u):$(id -g) \
+          -v "$PWD":/src \
+          pyupio/bandit \
+          bandit -r /src \
+                 -f json \
+                 -o /src/bandit-report.json || true
+        '''
+    }
+
+    /* =========================================================
+       Secrets Scan - Gitleaks
+       ========================================================= */
+    stage('Secrets Scan - Gitleaks') {
+        echo "🔐 Running secret scanning with Gitleaks"
+
+        sh '''
+        docker run --rm \
+          -u $(id -u):$(id -g) \
+          -v "$PWD":/repo \
+          zricethezav/gitleaks:latest \
+          detect \
+          --source=/repo \
+          --report-format json \
+          --report-path /repo/gitleaks-report.json || true
+        '''
+    }
+
+    /* =========================================================
+       SCA - Dependency-Track
+       ========================================================= */
+    stage('SCA - Dependency-Track') {
+        echo "📦 Generating SBOM and uploading to Dependency-Track"
+
+        withCredentials([
+            string(credentialsId: 'dependency-track-api-key', variable: 'DT_API_KEY'),
+            string(credentialsId: 'dependency-track-url',     variable: 'DT_URL')
+        ]) {
+
+            sh '''
+            set -e
+
+            echo "🔹 Generating SBOM (CycloneDX - Python)"
+
+            docker run --rm \
+              -u $(id -u):$(id -g) \
+              -v "$PWD":/app \
+              cyclonedx/cyclonedx-python \
+              requirements \
+              /app/requirements.txt \
+              -o /app/bom.xml
+
+            echo "🔹 Uploading BOM to Dependency-Track"
+
+            curl -s -X POST "$DT_URL/api/v1/bom" \
+              -H "X-Api-Key: $DT_API_KEY" \
+              -H "Content-Type: multipart/form-data" \
+              -F "autoCreate=true" \
+              -F "projectName=pygoat" \
+              -F "projectVersion=1.0" \
+              -F "bom=@bom.xml"
+            '''
+        }
+    }
+
+    /* =========================================================
+       Results Summary
+       ========================================================= */
+    stage('Results Summary') {
+        echo '''
+        ✅ Security analysis completed
+
+        Artifacts generated:
+        - SAST (Bandit):       bandit-report.json
+        - Secrets (Gitleaks):  gitleaks-report.json
+        - SCA (SBOM):          bom.xml
+
+        🔎 Review results in:
+        - Jenkins Workspace
+        - Dependency-Track Web UI
+        '''
+    }
+}
