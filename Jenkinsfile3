@@ -79,8 +79,8 @@ node {
               -H "X-Api-Key: $DT_API_KEY" \
               -H "Content-Type: multipart/form-data" \
               -F "autoCreate=true" \
-              -F "projectName=pygoat" \
-              -F "projectVersion=1.0" \
+              -F "projectName=${APP_NAME}" \
+              -F "projectVersion=${APP_VERSION}" \
               -F "bom=@bom.xml"
             '''
         }
@@ -98,16 +98,17 @@ node {
         - Secrets (Gitleaks):  gitleaks-report.json
         - SCA (SBOM):          bom.xml
 
-        🔎 Review results in:
-        - Jenkins Workspace
-        - Dependency-Track Web UI
+        📂 Available in Jenkins → Build → Artifacts
         '''
-    post {
-        always {
-            archiveArtifacts artifacts: '*.json,*.xml', fingerprint: true
-        }
-    }
-
-
     }
 }
+
+/* =========================================================
+   Post actions
+   ========================================================= */
+post {
+    always {
+        archiveArtifacts artifacts: '*.json,*.xml', fingerprint: true
+    }
+}
+
