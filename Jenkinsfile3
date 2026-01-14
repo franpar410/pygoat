@@ -102,5 +102,12 @@ node {
         - Jenkins Workspace
         - Dependency-Track Web UI
         '''
+    post {
+        always {
+            archiveArtifacts artifacts: '*.json,*.xml', fingerprint: true
+        }
+    }
+
+
     }
 }
