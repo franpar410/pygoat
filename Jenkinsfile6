@@ -21,13 +21,14 @@ node {
             sh '''
             docker run --rm \
               -v "$PWD":/src \
-              pyupio/bandit \
+              ghcr.io/pycqa/bandit:latest \
               bandit -r /src \
                      -f json \
                      -o /src/bandit-report.json \
                      --exit-zero
             '''
         }
+
 
         /* =========================================================
            Secrets Scan - Gitleaks
