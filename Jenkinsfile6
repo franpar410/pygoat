@@ -21,13 +21,14 @@ node {
             sh '''
             docker run --rm \
               -v "$PWD":/src \
-              ghcr.io/pycqa/bandit:latest \
+              pycqa/bandit:latest \
               bandit -r /src \
                      -f json \
                      -o /src/bandit-report.json \
                      --exit-zero
             '''
         }
+
 
 
         /* =========================================================
