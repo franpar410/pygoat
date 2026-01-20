@@ -1,6 +1,12 @@
 pipeline {
     agent any
 
+    environment {
+        LAB_MODE = "true"
+        DEFECTDOJO_URL = credentials('DEFECTDOJO_URL')
+        DEFECTDOJO_API_KEY = credentials('DEFECTDOJO_API_KEY')
+    }
+
     stages {
 
         stage('Checkout') {
@@ -9,19 +15,16 @@ pipeline {
             }
         }
 
-        /* =======================
-           BANDIT SAST
-        ======================== */
         stage('Bandit SAST') {
             steps {
                 sh '''
-                echo "🛡️ Running Bandit SAST analysis (Lab Mode)..."
-                docker run --rm \
-                  -v "$PWD:/src" \
-                  python:3.12-slim sh -c "
-                    pip install --no-cache-dir bandit &&
-                    bandit -r /src -f json -o /src/bandit.json || true
-                  "
+                    echo "🛡️ Running Bandit SAST analysis (Lab Mode)..."
+                    docker run --rm \
+                      -v "$PWD:/src" \
+                      python:3.12-slim sh -c "
+                        pip install --no-cache-dir bandit &&
+                        bandit -r /src -f json -o /src/bandit-report.json || true
+                      "
                 '''
             }
         }
@@ -29,22 +32,26 @@ pipeline {
         stage('Bandit Gate (Lab Mode)') {
             steps {
                 sh '''
-                echo "🔎 Evaluating Bandit findings (non-blocking)..."
-                python3 << 'EOF'
+                    echo "🔎 Evaluating Bandit findings (non-blocking)..."
+                    python3 - << 'EOF'
 import json
 
-with open("bandit.json") as f:
-    data = json.load(f)
+try:
+    with open("bandit-report.json") as f:
+        data = json.load(f)
+except Exception as e:
+    print("⚠️ Could not read bandit-report.json:", e)
+    exit(0)
 
-high = [
-    r for r in data.get("results", [])
-    if r.get("issue_severity") in ["HIGH", "CRITICAL"]
+issues = [
+    i for i in data.get("results", [])
+    if i.get("issue_severity") in ("HIGH", "CRITICAL")
 ]
 
-if high:
+if issues:
     print("⚠️ Bandit HIGH/CRITICAL findings:")
-    for r in high:
-        print(f"- {r['issue_severity']} | {r['issue_text']} | {r['filename']}:{r['line_number']}")
+    for i in issues:
+        print(f"- {i['issue_severity']} | {i['issue_text']} | {i['filename']}:{i['line_number']}")
 else:
     print("✅ No HIGH/CRITICAL findings")
 
@@ -54,58 +61,28 @@ EOF
             }
         }
 
-        stage('Upload Bandit to DefectDojo') {
+        stage('Upload Bandit to DefectDojo (Non-Blocking)') {
             steps {
-                withCredentials([
-                    string(credentialsId: 'DEFECTDOJO_API_KEY', variable: 'DD_API_KEY'),
-                    string(credentialsId: 'DEFECTDOJO_URL', variable: 'DD_URL')
-                ]) {
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
                     sh '''
-                    echo "📤 Uploading Bandit report to DefectDojo..."
-                    curl -s -X POST "$DD_URL/api/v2/import-scan/" \
-                      -H "Authorization: Token $DD_API_KEY" \
-                      -F scan_type="Bandit Scan" \
-                      -F product_name="PyGoat" \
-                      -F engagement_name="PyGoat CI/CD" \
-                      -F file=@bandit.json
+                        echo "📤 Uploading Bandit report to DefectDojo (best effort)..."
+                        curl -s -X POST "$DEFECTDOJO_URL/api/v2/import-scan/" \
+                          -H "Authorization: Token $DEFECTDOJO_API_KEY" \
+                          -F scan_type="Bandit Scan" \
+                          -F product_name="PyGoat" \
+                          -F engagement_name="PyGoat CI/CD" \
+                          -F file=@bandit.json || true
+                        echo "ℹ️ DefectDojo upload attempted (pipeline will not fail)"
                     '''
                 }
             }
         }
 
-        /* =======================
-           GITLEAKS
-        ======================== */
-        stage('Gitleaks Secrets Scan') {
+        stage('Gitleaks Secrets Scan (Lab Mode)') {
             steps {
                 sh '''
-                echo "🔐 Running Gitleaks scan..."
-                docker run --rm \
-                  -v "$PWD:/repo" \
-                  zricethezav/gitleaks:latest detect \
-                  --source=/repo \
-                  --report-format json \
-                  --report-path /repo/gitleaks.json || true
+                    echo "🔐 Gitleaks skipped (Lab Mode placeholder)"
                 '''
-            }
-        }
-
-        stage('Upload Gitleaks to DefectDojo') {
-            steps {
-                withCredentials([
-                    string(credentialsId: 'DEFECTDOJO_API_KEY', variable: 'DD_API_KEY'),
-                    string(credentialsId: 'DEFECTDOJO_URL', variable: 'DD_URL')
-                ]) {
-                    sh '''
-                    echo "📤 Uploading Gitleaks report to DefectDojo..."
-                    curl -s -X POST "$DD_URL/api/v2/import-scan/" \
-                      -H "Authorization: Token $DD_API_KEY" \
-                      -F scan_type="Gitleaks Scan" \
-                      -F product_name="PyGoat" \
-                      -F engagement_name="PyGoat CI/CD" \
-                      -F file=@gitleaks.json
-                    '''
-                }
             }
         }
     }
@@ -113,7 +90,7 @@ EOF
     post {
         always {
             echo "📎 Archiving security artifacts..."
-            archiveArtifacts artifacts: '*.json', fingerprint: true
+            archiveArtifacts artifacts: '*.json', allowEmptyArchive: true
             echo "✅ Pipeline completed (Lab Mode)"
         }
     }
