@@ -35,17 +35,37 @@ pipeline {
             }
         }
 
-
         stage('Bandit Security Gate') {
             steps {
                 sh '''
-                  echo "Evaluating Bandit findings..."
-                  jq '.results[] | select(.issue_severity=="HIGH" or .issue_severity=="CRITICAL")' bandit.json \
-                  && { echo "❌ High/Critical issues found"; exit 1; } \
-                  || echo "✅ Bandit gate passed"
+                echo "🔎 Evaluating Bandit findings..."
+
+                python3 - << 'EOF'
+        import json
+        import sys
+
+        with open("bandit.json") as f:
+            data = json.load(f)
+
+        failures = [
+            r for r in data.get("results", [])
+            if r.get("issue_severity") in ("HIGH", "CRITICAL")
+        ]
+
+        if failures:
+            print("❌ Bandit security gate FAILED")
+            for r in failures:
+                print(f"- {r['issue_severity']} | {r['issue_text']} | {r['filename']}:{r['line_number']}")
+            sys.exit(1)
+
+        print("✅ Bandit security gate PASSED")
+        EOF
                 '''
             }
         }
+
+
+
 
         stage('Upload Bandit to DefectDojo') {
             steps {
