@@ -2,9 +2,11 @@ pipeline {
     agent any
 
     environment {
-        PROJECT_NAME     = "PyGoat"
-        ENGAGEMENT_NAME  = "PyGoat CI/CD"
-        BOM_FILE         = "bom.xml"
+        DD_PRODUCT      = "PyGoat"
+        DD_ENGAGEMENT   = "PyGoat CI/CD"
+        SBOM_FILE       = "bom.xml"
+        BANDIT_REPORT   = "bandit.json"
+        GITLEAKS_REPORT = "gitleaks.json"
     }
 
     stages {
@@ -16,9 +18,8 @@ pipeline {
         }
 
         /* =========================
-           SAST — BANDIT
-        ========================== */
-
+           SAST - BANDIT
+           ========================= */
         stage('Bandit SAST') {
             steps {
                 sh '''
@@ -29,7 +30,7 @@ pipeline {
                   python:3.12-slim \
                   sh -c "
                     pip install --no-cache-dir bandit &&
-                    bandit -r /src -f json -o /src/bandit.json || true
+                    bandit -r /src -f json -o /src/${BANDIT_REPORT} || true
                   "
                 '''
             }
@@ -41,57 +42,61 @@ pipeline {
                 echo "🔎 Evaluating Bandit findings..."
 
                 python3 - << 'EOF'
-        import json
-        import sys
+import json, sys
 
-        with open("bandit.json") as f:
-            data = json.load(f)
+with open("bandit.json") as f:
+    data = json.load(f)
 
-        failures = [
-            r for r in data.get("results", [])
-            if r.get("issue_severity") in ("HIGH", "CRITICAL")
-        ]
+high = [
+    r for r in data.get("results", [])
+    if r.get("issue_severity") in ("HIGH", "CRITICAL")
+]
 
-        if failures:
-            print("❌ Bandit security gate FAILED")
-            for r in failures:
-                print(f"- {r['issue_severity']} | {r['issue_text']} | {r['filename']}:{r['line_number']}")
-            sys.exit(1)
+if high:
+    print("❌ Bandit gate FAILED")
+    for r in high:
+        print(f"- {r['issue_severity']} | {r['issue_text']} | {r['filename']}:{r['line_number']}")
+    sys.exit(1)
 
-        print("✅ Bandit security gate PASSED")
-        EOF
+print("✅ Bandit gate PASSED")
+EOF
                 '''
             }
         }
 
-
-
-
         stage('Upload Bandit to DefectDojo') {
             steps {
                 withCredentials([
-                    string(credentialsId: 'defectdojo-api-key', variable: 'DD_API_KEY'),
+                    string(credentialsId: 'defectdojo-api', variable: 'DD_API_KEY'),
                     string(credentialsId: 'defectdojo-url', variable: 'DD_URL')
                 ]) {
                     sh '''
-                      curl -s -X POST "${DD_URL}/api/v2/import-scan/" \
-                        -H "Authorization: Token ${DD_API_KEY}" \
-                        -F "scan_type=Bandit Scan" \
-                        -F "product_name=${PROJECT_NAME}" \
-                        -F "engagement_name=${ENGAGEMENT_NAME}" \
-                        -F "file=@bandit.json"
+                    curl -s -X POST "$DD_URL/api/v2/import-scan/" \
+                      -H "Authorization: Token $DD_API_KEY" \
+                      -F "scan_type=Bandit Scan" \
+                      -F "product_name=$DD_PRODUCT" \
+                      -F "engagement_name=$DD_ENGAGEMENT" \
+                      -F "file=@bandit.json"
                     '''
                 }
             }
         }
 
         /* =========================
-           SECRETS — GITLEAKS
-        ========================== */
+           SECRETS - GITLEAKS
+           ========================= */
         stage('Gitleaks Secrets Scan') {
             steps {
                 sh '''
-                  gitleaks detect --source . --report-format json --report-path gitleaks.json || true
+                echo "🔐 Running Gitleaks scan..."
+
+                docker run --rm \
+                  -v "$PWD:/repo" \
+                  zricethezav/gitleaks:latest detect \
+                  --source="/repo" \
+                  --report-format json \
+                  --report-path "/repo/${GITLEAKS_REPORT}" \
+                  --no-git || true
                 '''
             }
         }
@@ -99,10 +104,22 @@ pipeline {
         stage('Gitleaks Security Gate') {
             steps {
                 sh '''
-                  echo "Evaluating Gitleaks findings..."
-                  jq '.[]' gitleaks.json \
-                  && { echo "❌ Secrets detected"; exit 1; } \
-                  || echo "✅ No secrets found"
+                echo "🔎 Evaluating Gitleaks findings..."
+
+                python3 - << 'EOF'
+import json, sys
+
+with open("gitleaks.json") as f:
+    data = json.load(f)
+
+if data:
+    print("❌ Gitleaks gate FAILED")
+    for r in data:
+        print(f"- {r.get('RuleID')} | {r.get('Description')} | {r.get('File')}:{r.get('StartLine')}")
+    sys.exit(1)
+
+print("✅ Gitleaks gate PASSED")
+EOF
                 '''
             }
         }
@@ -110,56 +127,66 @@ pipeline {
         stage('Upload Gitleaks to DefectDojo') {
             steps {
                 withCredentials([
-                    string(credentialsId: 'defectdojo-api-key', variable: 'DD_API_KEY'),
+                    string(credentialsId: 'defectdojo-api', variable: 'DD_API_KEY'),
                     string(credentialsId: 'defectdojo-url', variable: 'DD_URL')
                 ]) {
                     sh '''
-                      curl -s -X POST "${DD_URL}/api/v2/import-scan/" \
-                        -H "Authorization: Token ${DD_API_KEY}" \
-                        -F "scan_type=Gitleaks Scan" \
-                        -F "product_name=${PROJECT_NAME}" \
-                        -F "engagement_name=${ENGAGEMENT_NAME}" \
-                        -F "file=@gitleaks.json"
+                    curl -s -X POST "$DD_URL/api/v2/import-scan/" \
+                      -H "Authorization: Token $DD_API_KEY" \
+                      -F "scan_type=Gitleaks Scan" \
+                      -F "product_name=$DD_PRODUCT" \
+                      -F "engagement_name=$DD_ENGAGEMENT" \
+                      -F "file=@gitleaks.json"
                     '''
                 }
             }
         }
 
         /* =========================
-           SCA — DEPENDENCY TRACK
-        ========================== */
+           SCA - DEPENDENCY TRACK
+           ========================= */
         stage('Generate SBOM') {
             steps {
                 sh '''
-                  cyclonedx-py -o ${BOM_FILE}
+                echo "📦 Generating SBOM..."
+
+                docker run --rm \
+                  -v "$PWD:/src" \
+                  cyclonedx/cyclonedx-python:latest \
+                  -r /src -o /src/${SBOM_FILE}
                 '''
             }
         }
 
         stage('Upload BOM to Dependency-Track') {
             steps {
-                sh '''
-                  curl -X POST http://dependency-track:8080/api/v1/bom \
-                    -H "X-Api-Key: ${DEPENDENCY_TRACK_API_KEY}" \
-                    -F "projectName=${PROJECT_NAME}" \
-                    -F "projectVersion=1.0" \
-                    -F "bom=@${BOM_FILE}"
-                '''
+                withCredentials([
+                    string(credentialsId: 'dependencytrack-api', variable: 'DT_API_KEY')
+                ]) {
+                    sh '''
+                    curl -s -X POST "http://dependency-track-apiserver:8080/api/v1/bom" \
+                      -H "X-Api-Key: $DT_API_KEY" \
+                      -F "projectName=PyGoat" \
+                      -F "projectVersion=1.0" \
+                      -F "bom=@${SBOM_FILE}"
+                    '''
+                }
             }
         }
 
         stage('Upload Dependency-Track Findings to DefectDojo') {
             steps {
                 withCredentials([
-                    string(credentialsId: 'defectdojo-api-key', variable: 'DD_API_KEY'),
+                    string(credentialsId: 'defectdojo-api', variable: 'DD_API_KEY'),
                     string(credentialsId: 'defectdojo-url', variable: 'DD_URL')
                 ]) {
                     sh '''
-                      curl -s -X POST "${DD_URL}/api/v2/import-scan/" \
-                        -H "Authorization: Token ${DD_API_KEY}" \
-                        -F "scan_type=Dependency Track Findings" \
-                        -F "product_name=${PROJECT_NAME}" \
-                        -F "engagement_name=${ENGAGEMENT_NAME}"
+                    curl -s -X POST "$DD_URL/api/v2/import-scan/" \
+                      -H "Authorization: Token $DD_API_KEY" \
+                      -F "scan_type=Dependency Track Finding Import" \
+                      -F "product_name=$DD_PRODUCT" \
+                      -F "engagement_name=$DD_ENGAGEMENT" \
+                      -F "file=@${SBOM_FILE}"
                     '''
                 }
             }
@@ -171,10 +198,10 @@ pipeline {
             archiveArtifacts artifacts: '*.json,*.xml', fingerprint: true
         }
         failure {
-            echo '🚨 Pipeline failed due to security gate'
+            echo "🚨 Pipeline failed due to security gate"
         }
         success {
-            echo '✅ Pipeline completed successfully'
+            echo "✅ Pipeline completed successfully"
         }
     }
 }
