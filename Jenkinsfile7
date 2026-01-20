@@ -18,13 +18,23 @@ pipeline {
         /* =========================
            SAST — BANDIT
         ========================== */
+
         stage('Bandit SAST') {
             steps {
                 sh '''
-                  bandit -r . -f json -o bandit.json || true
+                echo "🛡️ Running Bandit SAST analysis..."
+
+                docker run --rm \
+                  -v "$PWD:/src" \
+                  python:3.12-slim \
+                  sh -c "
+                    pip install --no-cache-dir bandit &&
+                    bandit -r /src -f json -o /src/bandit.json || true
+                  "
                 '''
             }
         }
+
 
         stage('Bandit Security Gate') {
             steps {
