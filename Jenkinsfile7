@@ -1,13 +1,6 @@
 pipeline {
     agent any
 
-    environment {
-        DD_URL      = credentials('DEFECTDOJO_URL')
-        DD_API_KEY  = credentials('DEFECTDOJO_API_KEY')
-        DTRACK_URL  = credentials('DEPENDENCY_TRACK_URL')
-        DTRACK_KEY  = credentials('DEPENDENCY_TRACK_API_KEY')
-    }
-
     stages {
 
         stage('Checkout') {
@@ -27,13 +20,13 @@ pipeline {
                   -v "$PWD:/src" \
                   python:3.12-slim sh -c "
                     pip install --no-cache-dir bandit &&
-                    bandit -r /src -f json -o /src/bandit-report.json || true
+                    bandit -r /src -f json -o /src/bandit.json || true
                   "
                 '''
             }
         }
 
-        stage('Bandit Security Gate (Lab Mode)') {
+        stage('Bandit Gate (Lab Mode)') {
             steps {
                 sh '''
                 echo "🔎 Evaluating Bandit findings (non-blocking)..."
@@ -49,13 +42,13 @@ high = [
 ]
 
 if high:
-    print("⚠️ Bandit findings detected (Lab Mode):")
+    print("⚠️ Bandit HIGH/CRITICAL findings:")
     for r in high:
         print(f"- {r['issue_severity']} | {r['issue_text']} | {r['filename']}:{r['line_number']}")
 else:
-    print("✅ No HIGH/CRITICAL issues found")
+    print("✅ No HIGH/CRITICAL findings")
 
-print("➡️ Pipeline continues (Lab Mode)")
+print("➡️ Continuing pipeline (Lab Mode)")
 EOF
                 '''
             }
@@ -63,15 +56,20 @@ EOF
 
         stage('Upload Bandit to DefectDojo') {
             steps {
-                sh '''
-                echo "📤 Uploading Bandit report to DefectDojo..."
-                curl -s -X POST "$DD_URL/api/v2/import-scan/" \
-                  -H "Authorization: Token $DD_API_KEY" \
-                  -F scan_type="Bandit Scan" \
-                  -F product_name="PyGoat" \
-                  -F engagement_name="PyGoat CI/CD" \
-                  -F file=@bandit.json
-                '''
+                withCredentials([
+                    string(credentialsId: 'DEFECTDOJO_API_KEY', variable: 'DD_API_KEY'),
+                    string(credentialsId: 'DEFECTDOJO_URL', variable: 'DD_URL')
+                ]) {
+                    sh '''
+                    echo "📤 Uploading Bandit report to DefectDojo..."
+                    curl -s -X POST "$DD_URL/api/v2/import-scan/" \
+                      -H "Authorization: Token $DD_API_KEY" \
+                      -F scan_type="Bandit Scan" \
+                      -F product_name="PyGoat" \
+                      -F engagement_name="PyGoat CI/CD" \
+                      -F file=@bandit.json
+                    '''
+                }
             }
         }
 
@@ -94,59 +92,20 @@ EOF
 
         stage('Upload Gitleaks to DefectDojo') {
             steps {
-                sh '''
-                echo "📤 Uploading Gitleaks report to DefectDojo..."
-                curl -s -X POST "$DD_URL/api/v2/import-scan/" \
-                  -H "Authorization: Token $DD_API_KEY" \
-                  -F scan_type="Gitleaks Scan" \
-                  -F product_name="PyGoat" \
-                  -F engagement_name="PyGoat CI/CD" \
-                  -F file=@gitleaks.json
-                '''
-            }
-        }
-
-        /* =======================
-           SBOM + DEPENDENCY-TRACK
-        ======================== */
-        stage('Generate SBOM') {
-            steps {
-                sh '''
-                echo "📦 Generating SBOM (CycloneDX)..."
-                docker run --rm \
-                  -v "$PWD:/src" \
-                  cyclonedx/cyclonedx-python \
-                  /usr/local/bin/cyclonedx-py requirements \
-                  --format json \
-                  --output /src/sbom.json || true
-                '''
-            }
-        }
-
-        stage('Upload SBOM to Dependency-Track') {
-            steps {
-                sh '''
-                echo "📤 Uploading SBOM to Dependency-Track..."
-                curl -s -X POST "$DTRACK_URL/api/v1/bom" \
-                  -H "X-Api-Key: $DTRACK_KEY" \
-                  -F "projectName=PyGoat" \
-                  -F "projectVersion=lab" \
-                  -F "autoCreate=true" \
-                  -F "bom=@sbom.json"
-                '''
-            }
-        }
-
-        stage('Upload Dependency-Track Findings to DefectDojo') {
-            steps {
-                sh '''
-                echo "📤 Importing Dependency-Track findings into DefectDojo..."
-                curl -s -X POST "$DD_URL/api/v2/import-scan/" \
-                  -H "Authorization: Token $DD_API_KEY" \
-                  -F scan_type="Dependency Track Finding Packaging Format (FPF) Export" \
-                  -F product_name="PyGoat" \
-                  -F engagement_name="PyGoat CI/CD"
-                '''
+                withCredentials([
+                    string(credentialsId: 'DEFECTDOJO_API_KEY', variable: 'DD_API_KEY'),
+                    string(credentialsId: 'DEFECTDOJO_URL', variable: 'DD_URL')
+                ]) {
+                    sh '''
+                    echo "📤 Uploading Gitleaks report to DefectDojo..."
+                    curl -s -X POST "$DD_URL/api/v2/import-scan/" \
+                      -H "Authorization: Token $DD_API_KEY" \
+                      -F scan_type="Gitleaks Scan" \
+                      -F product_name="PyGoat" \
+                      -F engagement_name="PyGoat CI/CD" \
+                      -F file=@gitleaks.json
+                    '''
+                }
             }
         }
     }
