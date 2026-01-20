@@ -1,0 +1,150 @@
+pipeline {
+    agent any
+
+    environment {
+        PROJECT_NAME     = "PyGoat"
+        ENGAGEMENT_NAME  = "PyGoat CI/CD"
+        BOM_FILE         = "bom.xml"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        /* =========================
+           SAST — BANDIT
+        ========================== */
+        stage('Bandit SAST') {
+            steps {
+                sh '''
+                  bandit -r . -f json -o bandit.json || true
+                '''
+            }
+        }
+
+        stage('Bandit Security Gate') {
+            steps {
+                sh '''
+                  echo "Evaluating Bandit findings..."
+                  jq '.results[] | select(.issue_severity=="HIGH" or .issue_severity=="CRITICAL")' bandit.json \
+                  && { echo "❌ High/Critical issues found"; exit 1; } \
+                  || echo "✅ Bandit gate passed"
+                '''
+            }
+        }
+
+        stage('Upload Bandit to DefectDojo') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'defectdojo-api-key', variable: 'DD_API_KEY'),
+                    string(credentialsId: 'defectdojo-url', variable: 'DD_URL')
+                ]) {
+                    sh '''
+                      curl -s -X POST "${DD_URL}/api/v2/import-scan/" \
+                        -H "Authorization: Token ${DD_API_KEY}" \
+                        -F "scan_type=Bandit Scan" \
+                        -F "product_name=${PROJECT_NAME}" \
+                        -F "engagement_name=${ENGAGEMENT_NAME}" \
+                        -F "file=@bandit.json"
+                    '''
+                }
+            }
+        }
+
+        /* =========================
+           SECRETS — GITLEAKS
+        ========================== */
+        stage('Gitleaks Secrets Scan') {
+            steps {
+                sh '''
+                  gitleaks detect --source . --report-format json --report-path gitleaks.json || true
+                '''
+            }
+        }
+
+        stage('Gitleaks Security Gate') {
+            steps {
+                sh '''
+                  echo "Evaluating Gitleaks findings..."
+                  jq '.[]' gitleaks.json \
+                  && { echo "❌ Secrets detected"; exit 1; } \
+                  || echo "✅ No secrets found"
+                '''
+            }
+        }
+
+        stage('Upload Gitleaks to DefectDojo') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'defectdojo-api-key', variable: 'DD_API_KEY'),
+                    string(credentialsId: 'defectdojo-url', variable: 'DD_URL')
+                ]) {
+                    sh '''
+                      curl -s -X POST "${DD_URL}/api/v2/import-scan/" \
+                        -H "Authorization: Token ${DD_API_KEY}" \
+                        -F "scan_type=Gitleaks Scan" \
+                        -F "product_name=${PROJECT_NAME}" \
+                        -F "engagement_name=${ENGAGEMENT_NAME}" \
+                        -F "file=@gitleaks.json"
+                    '''
+                }
+            }
+        }
+
+        /* =========================
+           SCA — DEPENDENCY TRACK
+        ========================== */
+        stage('Generate SBOM') {
+            steps {
+                sh '''
+                  cyclonedx-py -o ${BOM_FILE}
+                '''
+            }
+        }
+
+        stage('Upload BOM to Dependency-Track') {
+            steps {
+                sh '''
+                  curl -X POST http://dependency-track:8080/api/v1/bom \
+                    -H "X-Api-Key: ${DEPENDENCY_TRACK_API_KEY}" \
+                    -F "projectName=${PROJECT_NAME}" \
+                    -F "projectVersion=1.0" \
+                    -F "bom=@${BOM_FILE}"
+                '''
+            }
+        }
+
+        stage('Upload Dependency-Track Findings to DefectDojo') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'defectdojo-api-key', variable: 'DD_API_KEY'),
+                    string(credentialsId: 'defectdojo-url', variable: 'DD_URL')
+                ]) {
+                    sh '''
+                      curl -s -X POST "${DD_URL}/api/v2/import-scan/" \
+                        -H "Authorization: Token ${DD_API_KEY}" \
+                        -F "scan_type=Dependency Track Findings" \
+                        -F "product_name=${PROJECT_NAME}" \
+                        -F "engagement_name=${ENGAGEMENT_NAME}"
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: '*.json,*.xml', fingerprint: true
+        }
+        failure {
+            echo '🚨 Pipeline failed due to security gate'
+        }
+        success {
+            echo '✅ Pipeline completed successfully'
+        }
+    }
+}
