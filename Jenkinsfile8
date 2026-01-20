@@ -38,8 +38,8 @@ node {
            ========================================================= */
         stage('Upload Bandit to DefectDojo') {
             withCredentials([
-                string(credentialsId: 'defectdojo-api-key', variable: 'DD_API_KEY'),
-                string(credentialsId: 'defectdojo-url',     variable: 'DD_URL')
+                string(credentialsId: 'DEFECTDOJO_API_KEY', variable: 'DD_API_KEY'),
+                string(credentialsId: 'DEFECTDOJO_URL',     variable: 'DD_URL')
             ]) {
 
                 sh '''
