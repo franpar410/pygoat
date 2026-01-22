@@ -134,6 +134,7 @@ node {
             }
         }
 
+
         stage('Security Gate - Dependency-Track') {
             echo "Evaluating Dependency-Track security gate"
 
