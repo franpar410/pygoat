@@ -50,6 +50,24 @@ node {
             }
         }
 
+        stage('Security Gate - Bandit') {
+            echo "Evaluating Bandit security gate"
+
+            script {
+                def highCount = sh(
+                    script: "jq '[.results[] | select(.issue_severity==\"HIGH\")] | length' bandit-report.json",
+                    returnStdout: true
+                ).trim()
+
+                echo "Bandit HIGH findings: ${highCount}"
+
+                if (highCount.toInteger() > 0) {
+                    echo "Bandit security gate triggered"
+                    currentBuild.result = 'UNSTABLE'
+                }
+            }
+        }
+
         stage('Secrets Scan - Gitleaks') {
             echo "Running Gitleaks secrets scan"
 
@@ -116,9 +134,56 @@ node {
             }
         }
 
+        stage('Security Gate - Dependency-Track') {
+            echo "Evaluating Dependency-Track security gate"
+
+            withCredentials([
+                string(credentialsId: 'dependency-track-api-key', variable: 'DT_API_KEY'),
+                string(credentialsId: 'dependency-track-url',     variable: 'DT_URL')
+            ]) {
+
+                script {
+                    def projectUuid = sh(
+                        script: '''
+                        curl -s -H "X-Api-Key: $DT_API_KEY" \
+                          "$DT_URL/api/v1/project?name=PyGoat&version=1.0" | jq -r '.[0].uuid'
+                        ''',
+                        returnStdout: true
+                    ).trim()
+
+                    def metrics = sh(
+                        script: """
+                        curl -s -H "X-Api-Key: $DT_API_KEY" \
+                          "$DT_URL/api/v1/metrics/project/${projectUuid}"
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    def critical = sh(
+                        script: "echo '${metrics}' | jq '.critical'",
+                        returnStdout: true
+                    ).trim()
+
+                    def high = sh(
+                        script: "echo '${metrics}' | jq '.high'",
+                        returnStdout: true
+                    ).trim()
+
+                    echo "Dependency-Track Critical: ${critical}"
+                    echo "Dependency-Track High: ${high}"
+
+                    if (critical.toInteger() > 0 || high.toInteger() > 0) {
+                        echo "Dependency-Track security gate triggered"
+                        currentBuild.result = 'UNSTABLE'
+                    }
+                }
+            }
+        }
+
     } finally {
 
         echo "Archiving security artifacts"
         archiveArtifacts artifacts: '*.json,*.xml', fingerprint: true
     }
 }
+
