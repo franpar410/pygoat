@@ -59,10 +59,10 @@ node {
                     docker run --rm \
                       -v "$PWD":/work \
                       alpine:3.19 \
-                      sh -c "
+                      sh -c '
                         apk add --no-cache jq > /dev/null && \
-                        jq '[.results[] | select(.issue_severity==\"HIGH\")] | length' /work/bandit-report.json
-                      "
+                        jq "[.results[] | select(.issue_severity == \\"HIGH\\")] | length" /work/bandit-report.json
+                      '
                     ''',
                     returnStdout: true
                 ).trim()
@@ -141,6 +141,7 @@ node {
                 '''
             }
         }
+
 
         stage('Security Gate - Dependency-Track') {
             echo "Evaluating Dependency-Track security gate"
