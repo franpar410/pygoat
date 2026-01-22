@@ -55,7 +55,15 @@ node {
 
             script {
                 def highCount = sh(
-                    script: "jq '[.results[] | select(.issue_severity==\"HIGH\")] | length' bandit-report.json",
+                    script: '''
+                    docker run --rm \
+                      -v "$PWD":/work \
+                      alpine:3.19 \
+                      sh -c "
+                        apk add --no-cache jq > /dev/null && \
+                        jq '[.results[] | select(.issue_severity==\"HIGH\")] | length' /work/bandit-report.json
+                      "
+                    ''',
                     returnStdout: true
                 ).trim()
 
@@ -134,7 +142,6 @@ node {
             }
         }
 
-
         stage('Security Gate - Dependency-Track') {
             echo "Evaluating Dependency-Track security gate"
 
@@ -144,29 +151,26 @@ node {
             ]) {
 
                 script {
-                    def projectUuid = sh(
+                    def metrics = sh(
                         script: '''
-                        curl -s -H "X-Api-Key: $DT_API_KEY" \
-                          "$DT_URL/api/v1/project?name=PyGoat&version=1.0" | jq -r '.[0].uuid'
+                        docker run --rm alpine:3.19 sh -c "
+                          apk add --no-cache curl jq > /dev/null && \
+                          PROJECT_UUID=$(curl -s -H 'X-Api-Key: $DT_API_KEY' \
+                            '$DT_URL/api/v1/project?name=PyGoat&version=1.0' | jq -r '.[0].uuid') && \
+                          curl -s -H 'X-Api-Key: $DT_API_KEY' \
+                            '$DT_URL/api/v1/metrics/project/'$PROJECT_UUID
+                        "
                         ''',
                         returnStdout: true
                     ).trim()
 
-                    def metrics = sh(
-                        script: """
-                        curl -s -H "X-Api-Key: $DT_API_KEY" \
-                          "$DT_URL/api/v1/metrics/project/${projectUuid}"
-                        """,
-                        returnStdout: true
-                    ).trim()
-
                     def critical = sh(
-                        script: "echo '${metrics}' | jq '.critical'",
+                        script: "echo '${metrics}' | docker run --rm -i alpine:3.19 sh -c \"apk add --no-cache jq > /dev/null && jq '.critical'\"",
                         returnStdout: true
                     ).trim()
 
                     def high = sh(
-                        script: "echo '${metrics}' | jq '.high'",
+                        script: "echo '${metrics}' | docker run --rm -i alpine:3.19 sh -c \"apk add --no-cache jq > /dev/null && jq '.high'\"",
                         returnStdout: true
                     ).trim()
 
@@ -187,4 +191,3 @@ node {
         archiveArtifacts artifacts: '*.json,*.xml', fingerprint: true
     }
 }
-
