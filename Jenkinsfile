@@ -8,7 +8,7 @@ node {
         }
 
         stage('SAST - Bandit') {
-            echo "Running Bandit SAST analysis"
+            echo "Ejecutando Bandit (SAST)..."
             sh '''
             docker run --rm \
               -v "$PWD":/src \
@@ -25,7 +25,7 @@ node {
                 string(credentialsId: 'DEFECTDOJO_URL',     variable: 'DD_URL')
             ]) {
                 sh '''
-                echo "Uploading Bandit report to DefectDojo..."
+                echo "Enviando reporte de Bandit a DefectDojo..."
                 curl -s -X POST "${DD_URL}/api/v2/import-scan/" \
                   -H "Authorization: Token ${DD_API_KEY}" \
                   -F "scan_type=Bandit Scan" \
@@ -52,14 +52,16 @@ node {
                     returnStdout: true
                 ).trim()
 
-                echo "Bandit HIGH/CRITICAL findings: ${high}"
+                echo "Bandit encontró ${high} vulnerabilidades HIGH/CRITICAL"
                 if (high && high.toInteger() > 0) {
+                    echo "Gate de seguridad: Bandit fallido."
                     currentBuild.result = 'UNSTABLE'
                 }
             }
         }
 
         stage('Secrets Scan - Gitleaks') {
+            echo "Ejecutando Gitleaks (Secrets)..."
             sh 'docker run --rm -v "$PWD":/repo zricethezav/gitleaks:latest detect --source=/repo --report-format json --report-path /repo/gitleaks-report.json --exit-code 0'
         }
 
@@ -69,6 +71,7 @@ node {
                 string(credentialsId: 'DEFECTDOJO_URL',     variable: 'DD_URL')
             ]) {
                 sh '''
+                echo "Enviando reporte de Gitleaks a DefectDojo..."
                 curl -s -X POST "${DD_URL}/api/v2/import-scan/" \
                   -H "Authorization: Token ${DD_API_KEY}" \
                   -F "scan_type=Gitleaks Scan" \
@@ -85,8 +88,10 @@ node {
                 string(credentialsId: 'dependency-track-url',     variable: 'DT_URL')
             ]) {
                 sh '''
+                echo "Generando SBOM con Syft..."
                 docker run --rm -v "$PWD":/src anchore/syft:latest dir:/src -o cyclonedx-xml=/src/bom.xml
                 
+                echo "Subiendo SBOM a Dependency-Track..."
                 curl -s -X POST "${DT_URL}/api/v1/bom" \
                   -H "X-Api-Key: ${DT_API_KEY}" \
                   -F "autoCreate=true" \
@@ -98,17 +103,19 @@ node {
         }
 
         stage('Security Gate - Dependency-Track') {
+            sleep 10
             withCredentials([
                 string(credentialsId: 'dependency-track-api-key', variable: 'DT_API_KEY'),
                 string(credentialsId: 'dependency-track-url',     variable: 'DT_URL')
             ]) {
                 script {
+                    // Usamos --network host para evitar problemas de resolución de nombres (Exit Code 6)
                     def metrics = sh(
                         script: """
-                        docker run --rm alpine:3.19 sh -c '
+                        docker run --rm --network host alpine:3.19 sh -c '
                             apk add --no-cache curl jq > /dev/null && \
                             UUID=\$(curl -s -H "X-Api-Key: $DT_API_KEY" "$DT_URL/api/v1/project?name=$APP_NAME&version=$APP_VERSION" | jq -r ".[0].uuid") && \
-                            if [ "\$UUID" != "null" ]; then
+                            if [ "\$UUID" != "null" ] && [ "\$UUID" != "" ]; then
                                 curl -s -H "X-Api-Key: $DT_API_KEY" "$DT_URL/api/v1/metrics/project/\$UUID"
                             else
                                 echo "{\\"critical\\": 0, \\"high\\": 0}"
@@ -118,13 +125,13 @@ node {
                         returnStdout: true
                     ).trim()
 
-                    def json = readJSON text: metrics
-                    int critical = json.critical ?: 0
-                    int high = json.high ?: 0
+                    def critical = sh(script: "echo '${metrics}' | jq '.critical // 0'", returnStdout: true).trim().toInteger()
+                    def high = sh(script: "echo '${metrics}' | jq '.high // 0'", returnStdout: true).trim().toInteger()
 
-                    echo "Dependency-Track Findings -> Critical: ${critical}, High: ${high}"
+                    echo "Dependency-Track -> Critical: ${critical}, High: ${high}"
 
                     if (critical > 0 || high > 0) {
+                        echo "Gate de seguridad: Dependency-Track fallido."
                         currentBuild.result = 'UNSTABLE'
                     }
                 }
@@ -133,8 +140,9 @@ node {
 
     } catch (Exception e) {
         currentBuild.result = 'FAILURE'
-        echo "Error en el pipeline: ${e.message}"
+        echo "Error crítico en el pipeline: ${e.message}"
     } finally {
-        archiveArtifacts artifacts: '*.json,*.xml', allowEmptyArchive: true
+        echo "Archivando artefactos de seguridad..."
+        archiveArtifacts artifacts: '*.json,*.xml', allowEmptyArchive: true, fingerprint: true
     }
 }
