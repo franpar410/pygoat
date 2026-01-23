@@ -1,0 +1,139 @@
+node {
+    env.APP_NAME    = "PyGoat"
+    env.APP_VERSION = "1.0"
+
+    try {
+        stage('Checkout SCM') {
+            checkout scm
+        }
+
+        stage('SAST - Bandit') {
+            echo "Ejecutando Bandit (SAST)..."
+            sh '''
+            docker run --rm -v "$PWD":/src -w /src python:3.11-slim \
+              sh -c "pip install --no-cache-dir bandit && bandit -r . -f json -o bandit-report.json --exit-zero"
+            '''
+        }
+
+        stage('Upload Bandit to DefectDojo') {
+            withCredentials([
+                string(credentialsId: 'DEFECTDOJO_API_KEY', variable: 'DD_API_KEY'),
+                string(credentialsId: 'DEFECTDOJO_URL',     variable: 'DD_URL')
+            ]) {
+                // Usamos red del host para asegurar conectividad
+                sh '''
+                docker run --rm --network host -v "$PWD":/work alpine:3.19 sh -c "
+                    apk add --no-cache curl > /dev/null && \
+                    curl -s -X POST '${DD_URL}/api/v2/import-scan/' \
+                      -H 'Authorization: Token ${DD_API_KEY}' \
+                      -F 'scan_type=Bandit Scan' \
+                      -F 'product_name=${APP_NAME}' \
+                      -F 'engagement_name=${APP_NAME} CI/CD' \
+                      -F 'file=@/work/bandit-report.json' \
+                      -F 'active=true' \
+                      -F 'verified=false'"
+                '''
+            }
+        }
+
+        stage('Security Gate - Bandit') {
+            script {
+                def high = sh(
+                    script: """
+                    docker run --rm -v "\$PWD":/work alpine:3.19 sh -c '
+                        apk add --no-cache jq > /dev/null && \
+                        jq "[.results[] | select(.issue_severity == \\"HIGH\\" or .issue_severity == \\"CRITICAL\\")] | length" /work/bandit-report.json
+                    '
+                    """,
+                    returnStdout: true
+                ).trim()
+                echo "Bandit: Vulnerabilidades Criticas/Altas: ${high}"
+                if (high.toInteger() > 0) { currentBuild.result = 'UNSTABLE' }
+            }
+        }
+
+        stage('Secrets Scan - Gitleaks') {
+            sh 'docker run --rm -v "$PWD":/repo zricethezav/gitleaks:latest detect --source=/repo --report-format json --report-path /repo/gitleaks-report.json --exit-code 0'
+        }
+
+        stage('Upload Gitleaks to DefectDojo') {
+            withCredentials([
+                string(credentialsId: 'DEFECTDOJO_API_KEY', variable: 'DD_API_KEY'),
+                string(credentialsId: 'DEFECTDOJO_URL',     variable: 'DD_URL')
+            ]) {
+                sh '''
+                docker run --rm --network host -v "$PWD":/work alpine:3.19 sh -c "
+                    apk add --no-cache curl > /dev/null && \
+                    curl -s -X POST '${DD_URL}/api/v2/import-scan/' \
+                      -H 'Authorization: Token ${DD_API_KEY}' \
+                      -F 'scan_type=Gitleaks Scan' \
+                      -F 'product_name=${APP_NAME}' \
+                      -F 'engagement_name=${APP_NAME} CI/CD' \
+                      -F 'file=@/work/gitleaks-report.json'"
+                '''
+            }
+        }
+
+        stage('SCA - Dependency-Track') {
+            withCredentials([
+                string(credentialsId: 'dependency-track-api-key', variable: 'DT_API_KEY'),
+                string(credentialsId: 'dependency-track-url',     variable: 'DT_URL')
+            ]) {
+                sh '''
+                docker run --rm -v "$PWD":/src anchore/syft:latest dir:/src -o cyclonedx-xml=/src/bom.xml
+                
+                # CORRECCION: Usar contenedor con --network host para subir el BOM
+                docker run --rm --network host -v "$PWD":/work alpine:3.19 sh -c "
+                    apk add --no-cache curl > /dev/null && \
+                    curl -s -X POST '${DT_URL}/api/v1/bom' \
+                      -H 'X-Api-Key: ${DT_API_KEY}' \
+                      -F 'autoCreate=true' \
+                      -F 'projectName=${APP_NAME}' \
+                      -F 'projectVersion=${APP_VERSION}' \
+                      -F 'bom=@/work/bom.xml'"
+                '''
+            }
+        }
+
+        stage('Security Gate - Dependency-Track') {
+            sleep 20 // Aumentado a 20s para dar margen al servidor
+            withCredentials([
+                string(credentialsId: 'dependency-track-api-key', variable: 'DT_API_KEY'),
+                string(credentialsId: 'dependency-track-url',     variable: 'DT_URL')
+            ]) {
+                script {
+                    def findings = sh(
+                        script: """
+                        docker run --rm --network host alpine:3.19 sh -c '
+                            apk add --no-cache curl jq > /dev/null && \
+                            UUID=\$(curl -s -H "X-Api-Key: $DT_API_KEY" "$DT_URL/api/v1/project?name=$APP_NAME&version=$APP_VERSION" | jq -r ".[0].uuid") && \
+                            if [ "\$UUID" != "null" ] && [ "\$UUID" != "" ]; then
+                                METRICS=\$(curl -s -H "X-Api-Key: $DT_API_KEY" "$DT_URL/api/v1/metrics/project/\$UUID") && \
+                                CRIT=\$(echo \$METRICS | jq ".critical // 0") && \
+                                HIGH=\$(echo \$METRICS | jq ".high // 0") && \
+                                echo "\$CRIT:\$HIGH"
+                            else
+                                echo "0:0"
+                            fi
+                        '
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    def parts = findings.split(':')
+                    int critical = parts[0].toInteger()
+                    int high = parts[1].toInteger()
+
+                    echo "Dependency-Track -> Criticas: ${critical}, Altas: ${high}"
+                    if (critical > 0 || high > 0) { currentBuild.result = 'UNSTABLE' }
+                }
+            }
+        }
+
+    } catch (Exception e) {
+        currentBuild.result = 'FAILURE'
+        echo "Error en el pipeline: ${e.message}"
+    } finally {
+        archiveArtifacts artifacts: '*.json,*.xml', allowEmptyArchive: true
+    }
+}
