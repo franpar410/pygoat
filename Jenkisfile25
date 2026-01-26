@@ -1,0 +1,96 @@
+node {
+
+    env.APP_NAME = "PyGoat"
+
+    try {
+
+        stage('Checkout SCM') {
+            checkout scm
+        }
+
+        stage('SAST - Bandit') {
+            echo "Ejecutando Bandit (SAST)..."
+            sh '''
+              docker run --rm \
+                -v "$PWD":/src \
+                -w /src \
+                python:3.11-slim \
+                sh -c "
+                  pip install --no-cache-dir bandit &&
+                  bandit -r . -f json -o bandit-report.json --exit-zero
+                "
+            '''
+        }
+
+        stage('Upload Bandit to DefectDojo') {
+            withCredentials([
+                string(credentialsId: 'DEFECTDOJO_API_KEY', variable: 'DD_API_KEY'),
+                string(credentialsId: 'DEFECTDOJO_URL', variable: 'DD_URL')
+            ]) {
+                sh '''
+                  docker run --rm \
+                    -v "$PWD":/work \
+                    python:3.11-slim \
+                    sh -c "
+                      apt-get update -qq &&
+                      apt-get install -y -qq curl &&
+                      echo 'Enviando Bandit a DefectDojo -> $DD_URL' &&
+                      curl -f -X POST $DD_URL/api/v2/import-scan/ \
+                        -H 'Authorization: Token $DD_API_KEY' \
+                        -F 'scan_type=Bandit Scan' \
+                        -F 'product_name=$APP_NAME' \
+                        -F 'engagement_name=$APP_NAME CI/CD' \
+                        -F 'file=@/work/bandit-report.json' \
+                        -F 'active=true' \
+                        -F 'verified=false'
+                    "
+                '''
+            }
+        }
+
+        stage('Dependency Track - Generate SBOM') {
+            echo "Generando SBOM con CycloneDX..."
+            sh '''
+              docker run --rm \
+                -v "$PWD":/src \
+                -w /src \
+                cyclonedx/cyclonedx-cli \
+                cyclonedx python \
+                -o sbom.json
+            '''
+        }
+
+        stage('Dependency Track - SBOM Upload') {
+            withCredentials([
+                string(credentialsId: 'dependency-track-api-key', variable: 'DT_API_KEY'),
+                string(credentialsId: 'dependency-track-url', variable: 'DT_URL')
+            ]) {
+                sh '''
+                  docker run --rm \
+                    -v "$PWD":/work \
+                    python:3.11-slim \
+                    sh -c "
+                      apt-get update -qq &&
+                      apt-get install -y -qq curl &&
+                      echo 'Subiendo SBOM a Dependency-Track -> $DT_URL' &&
+                      curl -f -X POST $DT_URL/api/v1/bom \
+                        -H 'X-Api-Key: $DT_API_KEY' \
+                        -H 'Content-Type: multipart/form-data' \
+                        -F 'projectName=$APP_NAME' \
+                        -F 'projectVersion=1.0' \
+                        -F 'autoCreate=true' \
+                        -F 'bom=@/work/sbom.json'
+                    "
+                '''
+            }
+        }
+
+    } catch (Exception e) {
+        currentBuild.result = 'FAILURE'
+        echo "❌ Error en el pipeline: ${e.getMessage()}"
+        throw e
+    } finally {
+        echo "Archivando artefactos de seguridad..."
+        archiveArtifacts artifacts: '*.json', allowEmptyArchive: true
+    }
+}
