@@ -1,0 +1,104 @@
+pipeline {
+    agent any
+
+    environment {
+        PRODUCT_NAME    = 'PyGoat'
+        ENGAGEMENT_NAME = 'PyGoat CI/CD'
+        PROJECT_VERSION = 'master'
+    }
+
+    stages {
+
+        stage('Checkout SCM') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('SAST - Bandit') {
+            steps {
+                echo 'Ejecutando Bandit (SAST)...'
+                sh '''
+                  docker run --rm \
+                    -v "$WORKSPACE:/src" \
+                    -w /src \
+                    python:3.11-slim \
+                    sh -c "pip install --no-cache-dir bandit && \
+                           bandit -r . -f json -o bandit-report.json --exit-zero"
+                '''
+            }
+        }
+
+        stage('Upload Bandit to DefectDojo') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'DEFECTDOJO_URL', variable: 'DD_URL'),
+                    string(credentialsId: 'DEFECTDOJO_API_KEY', variable: 'DD_API_KEY')
+                ]) {
+                    sh '''
+                      docker run --rm \
+                        --network host \
+                        -v "$WORKSPACE:/work" \
+                        python:3.11-slim \
+                        sh -c "
+                          export DEBIAN_FRONTEND=noninteractive &&
+                          apt-get update -qq &&
+                          apt-get install -y -qq curl &&
+                          curl -s -X POST \"$DD_URL/api/v2/import-scan/\" \
+                            -H \"Authorization: Token $DD_API_KEY\" \
+                            -F \"scan_type=Bandit Scan\" \
+                            -F \"product_name=$PRODUCT_NAME\" \
+                            -F \"engagement_name=$ENGAGEMENT_NAME\" \
+                            -F \"file=@/work/bandit-report.json\" \
+                            -F \"active=true\" \
+                            -F \"verified=false\"
+                        "
+                    '''
+                }
+            }
+        }
+
+        stage('Dependency Track - SBOM Upload') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'dependency-track-url', variable: 'DT_URL'),
+                    string(credentialsId: 'dependency-track-api-key', variable: 'DT_API_KEY')
+                ]) {
+                    sh '''
+                      docker run --rm \
+                        -v "$WORKSPACE:/src" \
+                        anchore/syft:latest dir:/src -o cyclonedx-xml=/src/bom.xml
+
+                      docker run --rm \
+                        --network host \
+                        -v "$WORKSPACE:/work" \
+                        python:3.11-slim \
+                        sh -c "
+                          export DEBIAN_FRONTEND=noninteractive &&
+                          apt-get update -qq &&
+                          apt-get install -y -qq curl &&
+                          curl -s -X POST \"$DT_URL/api/v1/bom\" \
+                            -H \"X-Api-Key: $DT_API_KEY\" \
+                            -F \"projectName=$PRODUCT_NAME\" \
+                            -F \"projectVersion=$PROJECT_VERSION\" \
+                            -F \"bom=@/work/bom.xml\"
+                        "
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo 'Archivando artefactos de seguridad...'
+            archiveArtifacts artifacts: '*.json,*.xml', allowEmptyArchive: true
+        }
+        failure {
+            echo '❌ El pipeline falló'
+        }
+        success {
+            echo '✅ Pipeline completado correctamente'
+        }
+    }
+}
