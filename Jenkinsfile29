@@ -1,0 +1,143 @@
+node {
+    env.APP_NAME = "PyGoat"
+    env.ENGAGEMENT_NAME = "PyGoat CI/CD"
+
+    try {
+
+        stage('Checkout SCM') {
+            checkout scm
+        }
+
+        /* =========================
+           SAST - BANDIT
+           ========================= */
+        stage('SAST - Bandit') {
+            catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                sh '''
+                  docker run --rm \
+                    -v "$PWD":/src \
+                    -w /src \
+                    python:3.11-slim \
+                    sh -c "
+                      pip install --no-cache-dir bandit &&
+                      bandit -r . -f json -o bandit-report.json --exit-zero
+                    "
+                '''
+            }
+        }
+
+        /* =========================
+           SAST SECURITY GATE
+           ========================= */
+        stage('Security Gate - Bandit') {
+            catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                sh '''
+                  HIGH=$(jq '[.results[] | select(.issue_severity=="HIGH")] | length' bandit-report.json)
+                  echo "Bandit HIGH findings: $HIGH"
+
+                  if [ "$HIGH" -gt 0 ]; then
+                    echo "❌ Security Gate FAILED (Bandit)"
+                    exit 1
+                  fi
+                '''
+            }
+        }
+
+        /* =========================
+           UPLOAD BANDIT TO DEFECTDOJO
+           ========================= */
+        stage('Upload Bandit to DefectDojo') {
+            catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                withCredentials([
+                    string(credentialsId: 'DEFECTDOJO_API_KEY', variable: 'DD_API_KEY'),
+                    string(credentialsId: 'DEFECTDOJO_URL', variable: 'DD_URL')
+                ]) {
+                    sh '''
+                      docker run --rm --network host \
+                        -v "$PWD":/work \
+                        alpine:3.19 sh -c "
+                          apk add --no-cache curl > /dev/null &&
+                          curl -s -X POST '$DD_URL/api/v2/import-scan/' \
+                            -H 'Authorization: Token $DD_API_KEY' \
+                            -F 'scan_type=Bandit Scan' \
+                            -F 'product_name=$APP_NAME' \
+                            -F 'engagement_name=$ENGAGEMENT_NAME' \
+                            -F 'file=@/work/bandit-report.json' \
+                            -F 'active=true' \
+                            -F 'verified=false'
+                        "
+                    '''
+                }
+            }
+        }
+
+        /* =========================
+           SCA - DEPENDENCY TRACK
+           ========================= */
+        stage('SCA - Dependency Track') {
+            catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                withCredentials([
+                    string(credentialsId: 'dependency-track-api-key', variable: 'DT_API_KEY'),
+                    string(credentialsId: 'dependency-track-url', variable: 'DT_URL')
+                ]) {
+                    sh '''
+                      docker run --rm \
+                        -v "$PWD":/src \
+                        -w /src \
+                        cyclonedx/cyclonedx-python:latest \
+                        -o bom.xml
+
+                      docker run --rm --network host \
+                        -v "$PWD":/work \
+                        alpine:3.19 sh -c "
+                          apk add --no-cache curl > /dev/null &&
+                          curl -s -X POST '$DT_URL/api/v1/bom' \
+                            -H 'X-Api-Key: $DT_API_KEY' \
+                            -F 'autoCreate=true' \
+                            -F 'projectName=$APP_NAME' \
+                            -F 'projectVersion=main' \
+                            -F 'bom=@/work/bom.xml'
+                        "
+                    '''
+                }
+            }
+        }
+
+        /* =========================
+           SCA SECURITY GATE
+           ========================= */
+        stage('Security Gate - Dependency Track') {
+            catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                withCredentials([
+                    string(credentialsId: 'dependency-track-api-key', variable: 'DT_API_KEY'),
+                    string(credentialsId: 'dependency-track-url', variable: 'DT_URL')
+                ]) {
+                    sh '''
+                      sleep 15
+
+                      PROJECT_UUID=$(curl -s --network host \
+                        -H "X-Api-Key: $DT_API_KEY" \
+                        "$DT_URL/api/v1/project?name=$APP_NAME" | jq -r '.[0].uuid')
+
+                      CRITICAL=$(curl -s --network host \
+                        -H "X-Api-Key: $DT_API_KEY" \
+                        "$DT_URL/api/v1/project/$PROJECT_UUID/vulnerabilities" \
+                        | jq '[.[] | select(.severity=="CRITICAL")] | length')
+
+                      echo "Dependency-Track CRITICAL vulns: $CRITICAL"
+
+                      if [ "$CRITICAL" -gt 0 ]; then
+                        echo "❌ Security Gate FAILED (Dependency-Track)"
+                        exit 1
+                      fi
+                    '''
+                }
+            }
+        }
+
+    } catch (Exception e) {
+        echo "Pipeline finished with some UNSTABLE stages: ${e.getMessage()}"
+    } finally {
+        archiveArtifacts artifacts: '*.json,*.xml', allowEmptyArchive: true
+    }
+}
