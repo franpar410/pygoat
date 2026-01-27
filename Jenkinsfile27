@@ -1,0 +1,159 @@
+node {
+
+    env.APP_NAME = "PyGoat"
+    env.PROJECT_VERSION = "master"
+
+    try {
+
+        stage('Checkout SCM') {
+            checkout scm
+        }
+
+        stage('SAST - Bandit') {
+            echo "Ejecutando Bandit (SAST)..."
+            sh '''
+              docker run --rm \
+                -v "$PWD":/src \
+                -w /src \
+                python:3.11-slim sh -c "
+                  pip install --no-cache-dir bandit &&
+                  bandit -r . -f json -o bandit-report.json --exit-zero
+                "
+            '''
+        }
+
+        stage('Security Gate - Bandit') {
+            script {
+                echo "Evaluando Security Gate de Bandit..."
+                def result = sh(
+                    script: '''
+                      docker run --rm \
+                        -v "$PWD":/work \
+                        python:3.11-slim sh -c "
+                          pip install --no-cache-dir jq &&
+                          HIGH=$(jq '[.results[] | select(.issue_severity==\"HIGH\")] | length' /work/bandit-report.json) &&
+                          CRITICAL=$(jq '[.results[] | select(.issue_severity==\"CRITICAL\")] | length' /work/bandit-report.json) &&
+                          echo \"High: $HIGH | Critical: $CRITICAL\" &&
+                          if [ \"$HIGH\" -gt 0 ] || [ \"$CRITICAL\" -gt 0 ]; then
+                            exit 10
+                          fi
+                        "
+                    ''',
+                    returnStatus: true
+                )
+
+                if (result == 10) {
+                    echo "⚠️ Security Gate Bandit VIOLADO (HIGH/CRITICAL)"
+                    currentBuild.result = 'UNSTABLE'
+                } else {
+                    echo "✅ Security Gate Bandit OK"
+                }
+            }
+        }
+
+        stage('Upload Bandit to DefectDojo') {
+            withCredentials([
+                string(credentialsId: 'DEFECTDOJO_API_KEY', variable: 'DD_API_KEY'),
+                string(credentialsId: 'DEFECTDOJO_URL', variable: 'DD_URL')
+            ]) {
+                sh '''
+                  docker run --rm \
+                    -v "$PWD":/work \
+                    python:3.11-slim sh -c "
+                      apt-get update -qq &&
+                      apt-get install -y -qq curl &&
+                      curl -f -X POST ${DD_URL}/api/v2/import-scan/ \
+                        -H 'Authorization: Token ${DD_API_KEY}' \
+                        -F 'scan_type=Bandit Scan' \
+                        -F 'product_name=${APP_NAME}' \
+                        -F 'engagement_name=${APP_NAME} CI/CD' \
+                        -F 'file=@/work/bandit-report.json' \
+                        -F 'active=true' \
+                        -F 'verified=false'
+                    "
+                '''
+            }
+        }
+
+        stage('Generate SBOM (CycloneDX)') {
+            sh '''
+              docker run --rm \
+                -v "$PWD":/work \
+                cyclonedx/cyclonedx-cli \
+                cyclonedx-py requirements -o /work/bom.xml
+            '''
+        }
+
+        stage('Upload SBOM to Dependency-Track') {
+            withCredentials([
+                string(credentialsId: 'dependency-track-api-key', variable: 'DT_API_KEY'),
+                string(credentialsId: 'dependency-track-url', variable: 'DT_URL')
+            ]) {
+                sh '''
+                  docker run --rm \
+                    -v "$PWD":/work \
+                    python:3.11-slim sh -c "
+                      apt-get update -qq &&
+                      apt-get install -y -qq curl jq &&
+                      curl -s -X POST ${DT_URL}/api/v1/bom \
+                        -H 'X-Api-Key: ${DT_API_KEY}' \
+                        -F 'autoCreate=true' \
+                        -F 'projectName=${APP_NAME}' \
+                        -F 'projectVersion=${PROJECT_VERSION}' \
+                        -F 'bom=@/work/bom.xml'
+                    "
+                '''
+            }
+        }
+
+        stage('Security Gate - Dependency-Track') {
+            withCredentials([
+                string(credentialsId: 'dependency-track-api-key', variable: 'DT_API_KEY'),
+                string(credentialsId: 'dependency-track-url', variable: 'DT_URL')
+            ]) {
+                script {
+                    def result = sh(
+                        script: '''
+                          docker run --rm \
+                            python:3.11-slim sh -c "
+                              apt-get update -qq &&
+                              apt-get install -y -qq curl jq &&
+
+                              PROJECT_UUID=$(curl -s ${DT_URL}/api/v1/project/lookup?name=${APP_NAME}&version=${PROJECT_VERSION} \
+                                -H 'X-Api-Key: ${DT_API_KEY}' | jq -r '.uuid') &&
+
+                              METRICS=$(curl -s ${DT_URL}/api/v1/metrics/project/${PROJECT_UUID}/current \
+                                -H 'X-Api-Key: ${DT_API_KEY}') &&
+
+                              CRITICAL=$(echo $METRICS | jq '.critical') &&
+                              HIGH=$(echo $METRICS | jq '.high') &&
+
+                              echo \"Critical: $CRITICAL | High: $HIGH\" &&
+
+                              if [ \"$CRITICAL\" -gt 0 ] || [ \"$HIGH\" -gt 0 ]; then
+                                exit 20
+                              fi
+                            "
+                        ''',
+                        returnStatus: true
+                    )
+
+                    if (result == 20) {
+                        echo "⚠️ Security Gate Dependency-Track VIOLADO"
+                        currentBuild.result = 'UNSTABLE'
+                    } else {
+                        echo "✅ Security Gate Dependency-Track OK"
+                    }
+                }
+            }
+        }
+
+    } catch (Exception e) {
+        currentBuild.result = 'FAILURE'
+        echo "❌ Error técnico en el pipeline: ${e.getMessage()}"
+        throw e
+    } finally {
+        echo "Archivando artefactos de seguridad..."
+        archiveArtifacts artifacts: '*.json,*.xml', allowEmptyArchive: true
+    }
+}
