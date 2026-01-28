@@ -36,23 +36,22 @@ node {
             ]) {
                 echo "📤 Centralizando reportes en DefectDojo..."
                 
-                // Construimos los argumentos base. 
-                // El espacio después de 'Token ' es vital.
+                // Definimos los argumentos, PERO el comando curl lo ponemos en el sh
                 def commonArgs = "-f -s -X POST \"\$DD_URL/api/v2/import-scan/\" " +
                                 "-H \"Authorization: Token \$DD_API_KEY\" " +
                                 "-F \"product_name=PyGoat\" " +
                                 "-F \"engagement_name=PyGoat CI/CD\" " +
                                 "-F \"active=true\" "
 
-                // Ejecución de las 3 importaciones
+                // Agregamos 'curl' al inicio de cada string de ejecución
                 echo "Importando Bandit..."
-                sh "${commonArgs} -F 'scan_type=Bandit Scan' -F 'file=@bandit-report.json'"
+                sh "curl ${commonArgs} -F 'scan_type=Bandit Scan' -F 'file=@bandit-report.json'"
                 
                 echo "Importando Gitleaks..."
-                sh "${commonArgs} -F 'scan_type=Gitleaks Scan' -F 'file=@gitleaks-report.json'"
+                sh "curl ${commonArgs} -F 'scan_type=Gitleaks Scan' -F 'file=@gitleaks-report.json'"
                 
                 echo "Importando CycloneDX (SCA)..."
-                sh "${commonArgs} -F 'scan_type=CycloneDX Scan' -F 'file=@bom.xml'"
+                sh "curl ${commonArgs} -F 'scan_type=CycloneDX Scan' -F 'file=@bom.xml'"
                 
                 echo "✅ ¡Sincronización completa!"
             }
