@@ -34,20 +34,30 @@ node {
                 string(credentialsId: 'DEFECTDOJO_API_KEY', variable: 'DD_API_KEY'),
                 string(credentialsId: 'DEFECTDOJO_URL',     variable: 'DD_URL')
             ]) {
-                echo "📤 Importando resultados a DefectDojo..."
+                echo "📤 Centralizando reportes en DefectDojo..."
                 
-                def commonArgs = "-H 'Authorization: Token \$DD_API_KEY' -F 'product_name=${APP_NAME}' -F 'engagement_name=PyGoat CI/CD' -F 'active=true' -F 'verified=false'"
+                // Construimos los argumentos base. 
+                // El espacio después de 'Token ' es vital.
+                def commonArgs = "-f -s -X POST \"\$DD_URL/api/v2/import-scan/\" " +
+                                "-H \"Authorization: Token \$DD_API_KEY\" " +
+                                "-F \"product_name=PyGoat\" " +
+                                "-F \"engagement_name=PyGoat CI/CD\" " +
+                                "-F \"active=true\" "
 
-                // 1. Importar Bandit
-                sh "curl -s -X POST \"\$DD_URL/api/v2/import-scan/\" ${commonArgs} -F 'scan_type=Bandit Scan' -F 'file=@bandit-report.json'"
+                // Ejecución de las 3 importaciones
+                echo "Importando Bandit..."
+                sh "${commonArgs} -F 'scan_type=Bandit Scan' -F 'file=@bandit-report.json'"
                 
-                // 2. Importar Gitleaks
-                sh "curl -s -X POST \"\$DD_URL/api/v2/import-scan/\" ${commonArgs} -F 'scan_type=Gitleaks Scan' -F 'file=@gitleaks-report.json'"
+                echo "Importando Gitleaks..."
+                sh "${commonArgs} -F 'scan_type=Gitleaks Scan' -F 'file=@gitleaks-report.json'"
                 
-                // 3. Importar SCA (CycloneDX)
-                sh "curl -s -X POST \"\$DD_URL/api/v2/import-scan/\" ${commonArgs} -F 'scan_type=CycloneDX Scan' -F 'file=@bom.xml'"
+                echo "Importando CycloneDX (SCA)..."
+                sh "${commonArgs} -F 'scan_type=CycloneDX Scan' -F 'file=@bom.xml'"
+                
+                echo "✅ ¡Sincronización completa!"
             }
         }
+
 
     } catch (Exception e) {
         currentBuild.result = 'FAILURE'
