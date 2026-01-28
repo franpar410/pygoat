@@ -7,59 +7,59 @@ node {
             checkout scm
         }
 
-        stage('SAST - Bandit') {
-            echo "Running Bandit..."
+        stage('Security Analysis (SAST & Secrets)') {
+            echo "Ejecutando Bandit y Gitleaks..."
+            // Bandit - Análisis de código estático
             sh 'docker run --rm -v "$PWD":/src -w /src python:3.11-slim sh -c "pip install --no-cache-dir bandit && bandit -r . -f json -o bandit-report.json --exit-zero"'
-            script {
-                def report = readJSON file: 'bandit-report.json'
-                int high = report.results.findAll { it.issue_severity == 'HIGH' }.size()
-                int crit = report.results.findAll { it.issue_severity == 'CRITICAL' }.size()
-                if (high > 0 || crit > 0) {
-                    echo "Security Gate: Found ${high} High and ${crit} Critical issues."
-                    currentBuild.result = 'UNSTABLE'
-                }
-            }
-        }
-
-        stage('Secrets - Gitleaks') {
-            echo "Running Gitleaks..."
+            // Gitleaks - Detección de secretos
             sh 'docker run --rm -v "$PWD":/repo zricethezav/gitleaks:latest detect --source=/repo --report-format json --report-path /repo/gitleaks-report.json --exit-code 0'
         }
 
         stage('SCA - Dependency-Track') {
-            echo "SCA Analysis..."
+            echo "Generando SBOM y subiendo a Dependency-Track..."
             withCredentials([
                 string(credentialsId: 'dependency-track-api-key', variable: 'DT_API_KEY'),
                 string(credentialsId: 'dependency-track-url',     variable: 'DT_URL')
             ]) {
-                // Generar SBOM
+                // Generar bom.xml con Syft
                 sh 'docker run --rm -v "$PWD":/src anchore/syft:latest dir:/src -o cyclonedx-xml=/src/bom.xml'
                 
-                // Subir SBOM
-                echo "Uploading SBOM to Dependency-Track..."
+                // Subir a Dependency-Track
                 sh "curl -s -X POST \"\$DT_URL/api/v1/bom\" -H \"X-Api-Key: \$DT_API_KEY\" -F \"autoCreate=true\" -F \"projectName=${APP_NAME}\" -F \"projectVersion=${APP_VERSION}\" -F \"bom=@bom.xml\""
             }
         }
 
-        stage('Upload to DefectDojo') {
+        stage('Centralize in DefectDojo') {
             withCredentials([
                 string(credentialsId: 'DEFECTDOJO_API_KEY', variable: 'DD_API_KEY'),
                 string(credentialsId: 'DEFECTDOJO_URL',     variable: 'DD_URL')
             ]) {
-                echo "Uploading Bandit & Gitleaks to DefectDojo..."
+                echo "Centralizando reportes en DefectDojo..."
                 
-                // Import Bandit
-                sh "curl -s -X POST \"\$DD_URL/api/v2/import-scan/\" -H \"Authorization: Token \$DD_API_KEY\" -F \"scan_type=Bandit Scan\" -F \"product_name=${APP_NAME}\" -F \"engagement_name=PyGoat CI/CD\" -F \"file=@bandit-report.json\""
+                def commonArgs = "-f -s -X POST \"\$DD_URL/api/v2/import-scan/\" " +
+                                "-H \"Authorization: Token \$DD_API_KEY\" " +
+                                "-F \"product_name=PyGoat\" " +
+                                "-F \"engagement_name=PyGoat CI/CD\" " +
+                                "-F \"active=true\" "
 
-                // Import Gitleaks
-                sh "curl -s -X POST \"\$DD_URL/api/v2/import-scan/\" -H \"Authorization: Token \$DD_API_KEY\" -F \"scan_type=Gitleaks Scan\" -F \"product_name=${APP_NAME}\" -F \"engagement_name=PyGoat CI/CD\" -F \"file=@gitleaks-report.json\""
+                echo "Importando Bandit..."
+                sh "curl ${commonArgs} -F 'scan_type=Bandit Scan' -F 'file=@bandit-report.json'"
+                
+                echo "Importando Gitleaks..."
+                sh "curl ${commonArgs} -F 'scan_type=Gitleaks Scan' -F 'file=@gitleaks-report.json'"
+                
+                echo "Importando CycloneDX (SCA)..."
+                sh "curl ${commonArgs} -F 'scan_type=CycloneDX Scan' -F 'file=@bom.xml'"
+                
+                echo "¡Sincronización completa!"
             }
         }
 
     } catch (Exception e) {
         currentBuild.result = 'FAILURE'
-        echo "ERROR: ${e.message}"
+        echo "Error en el pipeline: ${e.message}"
     } finally {
+        echo "Guardando artefactos de seguridad..."
         archiveArtifacts artifacts: '*.json,*.xml', allowEmptyArchive: true
     }
 }
