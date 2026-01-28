@@ -36,27 +36,26 @@ node {
             ]) {
                 echo "📤 Centralizando reportes en DefectDojo..."
                 
-                // Definimos los argumentos, PERO el comando curl lo ponemos en el sh
                 def commonArgs = "-f -s -X POST \"\$DD_URL/api/v2/import-scan/\" " +
                                 "-H \"Authorization: Token \$DD_API_KEY\" " +
-                                "-F \"product_name=PyGoat\" " +
-                                "-F \"engagement_name=PyGoat CI/CD\" " +
-                                "-F \"active=true\" "
+                                "-F \"product_name=${APP_NAME}\" " +
+                                "-F \"engagement_name=${APP_NAME} CI/CD\" " +
+                                "-F \"active=true\" " +
+                                "-F \"verified=false\" "
 
-                // Agregamos 'curl' al inicio de cada string de ejecución
-                echo "Importando Bandit..."
+                // Importación de hallazgos de código
                 sh "curl ${commonArgs} -F 'scan_type=Bandit Scan' -F 'file=@bandit-report.json'"
-                
-                echo "Importando Gitleaks..."
+        
+                // Importación de secretos
                 sh "curl ${commonArgs} -F 'scan_type=Gitleaks Scan' -F 'file=@gitleaks-report.json'"
-                
-                echo "Importando CycloneDX (SCA)..."
-                sh "curl ${commonArgs} -F 'scan_type=CycloneDX Scan' -F 'file=@bom.xml'"
-                
+        
+                // Importación de dependencias (SCA) - USANDO EL PARSER RECOMENDADO
+                echo "Importando hallazgos de SCA (CycloneDX)..."
+                sh "curl ${commonArgs} -F 'scan_type=Dependency Check Scan' -F 'file=@bom.xml'"
+        
                 echo "✅ ¡Sincronización completa!"
             }
         }
-
 
     } catch (Exception e) {
         currentBuild.result = 'FAILURE'
